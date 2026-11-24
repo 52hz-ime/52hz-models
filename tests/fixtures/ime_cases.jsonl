@@ -1,0 +1,13 @@
+{"id":"001","request":{"keys":"mingtiankaihu","context":"项目进度还没对齐，得把大家叫到一起。","event":"space"},"expected":{"action":"commit","text":"明天开会"}}
+{"id":"002","request":{"keys":"mingtiankaihu","context":"资料带齐了，银行那边也预约好了。","event":"space"},"expected":{"action":"commit","text":"明天开户"}}
+{"id":"003","request":{"keys":"mingtiankaihu","context":"会议室和银行都约在明天，两个安排都还没确认。","event":"space"},"expected":{"action":"ask","focus":"kaihu","options":["开会","开户"]}}
+{"id":"004","request":{"keys":"mingtiankaihu","context":"项目进度还没对齐，得把大家叫到一起。","event":"type"},"expected":{"action":"preview","text":"明天开会"}}
+{"id":"005","request":{"keys":"mingtiankaihui","context":"项目进度还没对齐，得把大家叫到一起。","event":"type"},"expected":{"action":"preview","text":"明天开会"}}
+{"id":"006","request":{"keys":"mingtiankaihu","context":"银行已经预约好了。","event":"more","focus":"kaihu"},"expected":{"action":"ask","focus":"kaihu","options":["开户","开会"]}}
+{"id":"007","request":{"keys":"mingtiankaihu","context":"银行已经预约好了。","event":"select","origin":"more","selected":{"kaihu":"开会"}},"expected":{"action":"preview","text":"明天开会"}}
+{"id":"008","request":{"keys":"mingtianzhaolixinkaihu","context":"明天的安排还没定。","memory":["李欣是项目同事，负责约会讨论进度。","李鑫是银行客户经理，负责办理账户。"],"event":"space"},"expected":{"action":"ask","focus":"lixin","options":["李欣","李鑫"]}}
+{"id":"009","request":{"keys":"mingtianzhaolixinkaihu","context":"明天的安排还没定。","memory":["李欣是项目同事，负责约会讨论进度。","李鑫是银行客户经理，负责办理账户。"],"event":"select","origin":"space","selected":{"lixin":"李鑫"}},"expected":{"action":"commit","text":"明天找李鑫开户"}}
+{"id":"010","request":{"keys":"mingtianzhaolixinkaihu","context":"会议和办账户都在考虑。","memory":["李欣和李鑫都能安排会议和办账户。"],"event":"select","origin":"space","selected":{"lixin":"李鑫"}},"expected":{"action":"ask","focus":"kaihu","options":["开会","开户"]}}
+{"id":"011","request":{"keys":"geilixin","context":"这个文件转给对接人。","memory":["这个项目的对接人叫李欣。"],"event":"space"},"expected":{"action":"commit","text":"给李欣"}}
+{"id":"012","request":{"keys":"geilixin","context":"这个文件转给对接人。","memory":["这个项目的对接人叫李鑫。"],"event":"space"},"expected":{"action":"commit","text":"给李鑫"}}
+{"id":"013","request":{"keys":"qingCodexkanPR-239","context":"代码评审。","event":"space"},"expected":{"action":"commit","text":"请Codex看PR-239"}}
