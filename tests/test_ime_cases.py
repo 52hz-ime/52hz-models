@@ -48,6 +48,13 @@ class ImeRegressionTests(unittest.TestCase):
                 "action": expected["action"], "candidates": [expected["text"]]}
             replies.append({"id": case["id"], **fields})
         self.assertEqual(score(reversed(replies))["passed"], len(replies))
+        text_rows = [row for row in replies if 'candidates' in row]
+        for row in text_rows:
+            row['search'] = {'pool': row['candidates'], 'winner': row['candidates'][0]}
+        text_rows[0]['search'] = {'pool': []}
+        text_rows[1]['search']['winner'] = '别的候选'
+        self.assertEqual(score(replies)['sentence_search'], {'target_sentences': len(text_rows),
+                         'in_pool': len(text_rows) - 1, 'winner_correct': len(text_rows) - 2})
         ambiguous = next(reply for reply in replies if reply["action"] == "ask")
         ambiguous.update(action="commit", candidates=["明天开户"])
         report = score(replies)

@@ -4,10 +4,13 @@ SHELL := /bin/bash
 
 MODEL ?= 2b
 PORT ?= 8089
+WEB_PORT ?= 8090
 IMAGE ?= ghcr.io/ggml-org/llama.cpp:server-cuda
 PYTHON ?= python3
 MODEL_DIR ?= $(HOME)/.cache/52hz/models
 RUNS_DIR ?= runs
+DECODER ?= ranked
+export IME_DECODER := $(DECODER)
 REQUESTS ?= /tmp/52hz-requests.jsonl
 RESPONSES ?= /tmp/52hz-responses.jsonl
 CONTAINER := 52hz-qwen
@@ -27,12 +30,13 @@ else ifeq ($(MODEL),27b)
   HF_SHA256 := 1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529
 endif
 
-.PHONY: help prepare serve status smoke logs stop test requests infer score eval eval-strict
+.PHONY: help prepare serve status smoke logs stop test requests infer score eval eval-strict web web-build web-test
 
 help:
 	@printf '%s\n' 'make prepare [MODEL=2b|27b] 下载镜像及所选权重，不启动服务（默认 2b）' \
 	  'make serve [MODEL=2b|27b]   准备缺少的资源，再启动本地 Qwen' \
 	  'make status / make logs     检查是否就绪 / 跟随服务日志' \
+	  'make web                    启动浏览器实验台（WEB_PORT=8090）' \
 	  'make smoke [CONTEXT=...]    用 KEYS 和 CONTEXT 发一条输入法请求' \
 	  'make stop                   停止服务；保留模型缓存' \
 	  'make test                   离线测试用例和评分器（不调用模型）' \
@@ -77,6 +81,21 @@ stop:
 
 test:
 	$(PYTHON) -B -m unittest discover -s tests -v
+
+web/node_modules/.deps: web/package.json web/package-lock.json
+	cd web && npm ci --no-audit --no-fund
+	@touch $@
+
+web/dist/index.html: web/node_modules/.deps web/index.html web/src.jsx web/style.css web/public/whale.svg
+	cd web && npm run build
+
+web-build: web/dist/index.html
+
+web-test: web-build
+	cd web && npm test
+
+web: web-build
+	$(PYTHON) -B web_lab.py --port "$(WEB_PORT)" --model-port "$(PORT)"
 
 requests:
 	@$(PYTHON) -B tests/ime_cases.py requests

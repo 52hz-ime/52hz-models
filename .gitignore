@@ -1,2 +1,4 @@
 /runs/
 __pycache__/
+/web/node_modules/
+/web/dist/

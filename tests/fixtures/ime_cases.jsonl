@@ -11,3 +11,4 @@
 {"id":"011","request":{"keys":"geilixin","context":"这个文件转给对接人。","memory":["这个项目的对接人叫李欣。"],"event":"space"},"expected":{"action":"commit","text":"给李欣"}}
 {"id":"012","request":{"keys":"geilixin","context":"这个文件转给对接人。","memory":["这个项目的对接人叫李鑫。"],"event":"space"},"expected":{"action":"commit","text":"给李鑫"}}
 {"id":"013","request":{"keys":"qingCodexkanPR-239","context":"代码评审。","event":"space"},"expected":{"action":"commit","text":"请Codex看PR-239"}}
+{"id":"014","request":{"keys":"heAtlas2.1bwozaiyouyuyongnage","context":"已经试过Atlas4.0，正在比较两个备选模型。","event":"space","memory":[],"selected":{}},"expected":{"action":"commit","text":"和Atlas2.1b我在犹豫用哪个"}}

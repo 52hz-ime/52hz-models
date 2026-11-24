@@ -1,0 +1,15 @@
+{
+  "name": "52hz-input-lab",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22.12.0" },
+  "scripts": { "build": "vite build", "test": "node --test tests/lab.test.mjs" },
+  "dependencies": {
+    "@ai-sdk/react": "4.0.186",
+    "lucide-react": "1.78.0",
+    "react": "19.2.9",
+    "react-dom": "19.2.9",
+    "zod": "4.6.7"
+  },
+  "devDependencies": { "playwright": "1.62.1", "vite": "8.3.8" }
+}

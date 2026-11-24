@@ -35,11 +35,18 @@ class EvalWorkflowTests(unittest.TestCase):
         class Handler(BaseHTTPRequestHandler):
             def do_POST(self):
                 payload = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
-                inputs.append(json.loads(payload['messages'][1]['content']))
-                content = 'invalid' if len(inputs) == 1 else '{"id":"ignored","action":"commit","candidates":["明天开户"]}'
+                if self.path == '/apply-template':
+                    inputs.append(json.loads(payload['messages'][1]['content']))
+                    response = {'prompt': '待转换拼音'}
+                elif self.path == '/completion':
+                    response = {'content': '无效' if len(inputs) == 1 else '明天开户"', 'completion_probabilities': []}
+                else:
+                    name = payload['response_format']['json_schema']['name']
+                    content = '{"choice":"A","action":"commit"}' if name == 'ime_judge' else '{}'
+                    response = {'choices': [{'message': {'content': content}}]}
                 self.send_response(200)
                 self.end_headers()
-                self.wfile.write(json.dumps({'choices': [{'message': {'content': content}}]}).encode())
+                self.wfile.write(json.dumps(response).encode())
 
             def log_message(self, *args):
                 pass
@@ -50,7 +57,7 @@ class EvalWorkflowTests(unittest.TestCase):
             worker.start()
             try:
                 for target in ('eval', 'eval-strict'):
-                    process = subprocess.run(['make', target, f'PORT={server.server_port}', f'RUNS_DIR={directory}'],
+                    process = subprocess.run(['make', target, 'DECODER=ranked', f'PORT={server.server_port}', f'RUNS_DIR={directory}'],
                                              cwd=ROOT, capture_output=True, text=True)
                     self.assertEqual(process.returncode == 0, target == 'eval', process.stderr)
             finally:

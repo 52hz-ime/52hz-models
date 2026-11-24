@@ -2,12 +2,15 @@
 
 import argparse
 import json
+import os
 import sys
 from http.client import HTTPException
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
+
+from candidate_search import ranked
 
 
 PROMPT = """任务：把 keys 中的连续拼音按键转成当前要上屏的文字。只转换 keys，不回复聊天，不复述背景。
@@ -44,21 +47,34 @@ def output_schema(actions):
 def predict(endpoint, row):
     actions, instruction = decision_contract(row)
     fields = {key: row[key] for key in ('context', 'memory', 'selected', 'focus', 'keys') if key in row}
-    payload = {"model": "52hz-qwen", "temperature": 0, "max_tokens": 256,
-               "response_format": {"type": "json_schema", "json_schema": {"name": "ime_decision", "schema": output_schema(actions)}},
-               "messages": [
-                   {"role": "system", "content": PROMPT + '\n' + instruction},
-                   {"role": "user", "content": json.dumps(fields, ensure_ascii=False)}]}
-    request = Request(endpoint.rstrip('/') + '/v1/chat/completions', data=json.dumps(payload).encode(),
-                      headers={'Content-Type': 'application/json'})
-    with urlopen(request, timeout=120) as response:
-        content = json.load(response)['choices'][0]['message']['content']
-    try:
-        result = json.loads(content)
-        if not isinstance(result, dict):
-            raise ValueError('expected JSON object')
-    except (ValueError, TypeError):
-        result = {'error': 'invalid model output', 'raw': content}
+
+    def post(path, payload):
+        request = Request(endpoint.rstrip('/') + path, data=json.dumps(payload).encode(),
+                          headers={'Content-Type': 'application/json'})
+        with urlopen(request, timeout=120) as response:
+            return json.load(response)
+
+    def chat(system, data, schema, name):
+        packet = post('/v1/chat/completions', {'model': '52hz-qwen', 'temperature': 0, 'max_tokens': 256,
+                      'response_format': {'type': 'json_schema', 'json_schema': {'name': name, 'schema': schema}},
+                      'messages': [{'role': 'system', 'content': system},
+                                   {'role': 'user', 'content': json.dumps(data, ensure_ascii=False)}]})
+        content = packet['choices'][0]['message']['content']
+        try:
+            result = json.loads(content)
+            if not isinstance(result, dict):
+                raise ValueError('expected JSON object')
+            return result
+        except (ValueError, TypeError):
+            return {'error': 'invalid model output', 'raw': content}
+
+    mode = os.environ.get('IME_DECODER', 'ranked')
+    if mode == 'direct':
+        result = chat(PROMPT + '\n' + instruction, fields, output_schema(actions), 'ime_decision')
+    elif mode == 'ranked':
+        result = ranked(post, chat, fields, PROMPT, actions, instruction)
+    else:
+        raise ValueError('IME_DECODER must be ranked or direct')
     return {**result, 'id': row['id']}
 
 

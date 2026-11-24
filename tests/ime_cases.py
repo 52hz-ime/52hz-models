@@ -67,12 +67,20 @@ def score(replies, failures=None):
     seen = set()
     failed = []
     wrong_commits = []
+    pool_cases = pool_hits = winner_hits = 0
     for reply in replies:
         case_id = reply["id"]
         if case_id not in indexed or case_id in seen:
             raise ValueError(f"unknown or duplicate response id: {case_id}")
         seen.add(case_id)
         case = indexed[case_id]
+        trace = reply.get('search')
+        if isinstance(trace, dict) and 'text' in case['expected']:
+            gold = case['expected']['text']
+            pool_cases += 1
+            if gold in trace['pool']:
+                pool_hits += 1
+                winner_hits += trace.get('winner') == gold
         if not matches(case["expected"], reply):
             failed.append(case_id)
             if failures is not None:
@@ -81,8 +89,11 @@ def score(replies, failures=None):
                 wrong_commits.append(case_id)
     if missing := indexed.keys() - seen:
         raise ValueError(f"missing response ids: {', '.join(sorted(missing))}")
-    return {"total": len(seen), "passed": len(seen) - len(failed), "failed_ids": sorted(failed),
-            "wrong_commit_ids": sorted(wrong_commits)}
+    report = {"total": len(seen), "passed": len(seen) - len(failed), "failed_ids": sorted(failed),
+              "wrong_commit_ids": sorted(wrong_commits)}
+    if pool_cases:
+        report['sentence_search'] = {'target_sentences': pool_cases, 'in_pool': pool_hits, 'winner_correct': winner_hits}
+    return report
 
 
 def main():
