@@ -14,6 +14,7 @@ from candidate_search import ranked
 
 
 PROMPT = """任务：把 keys 中的连续汉语拼音按键，逐音节转换成当前要上屏的中文。只转换 keys，不回复聊天，不复述背景。
+keys 是唯一需要转换的机械输入；context、memory 和 selected 都不是待上屏文本，尤其不能把 context 原样复述或当成候选答案。
 先按 keys 的原始顺序切分并还原每个拼音音节，再用 context 和 memory 解决同音字；不要把整句概括、改写、翻译成标题或替换成近义句。
 context 是之前已经写完的文字；memory 是参考信息。它们只帮助在发音相近的答案之间做选择，不属于待转换的输入。
 例如 context 是“车票订好了。”，keys 是 wozaihuochezhan，首选应为“我在火车站”，不是“车票订好了。”。
@@ -48,7 +49,7 @@ def output_schema(actions):
 
 def predict(endpoint, row):
     actions, instruction = decision_contract(row)
-    fields = {key: row[key] for key in ('context', 'memory', 'selected', 'focus', 'keys') if key in row}
+    fields = {key: row[key] for key in ('keys', 'context', 'memory', 'selected', 'focus') if key in row}
 
     def post(path, payload):
         request = Request(endpoint.rstrip('/') + path, data=json.dumps(payload).encode(),
