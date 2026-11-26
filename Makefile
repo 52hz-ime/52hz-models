@@ -5,8 +5,11 @@ SHELL := /bin/bash
 MODEL ?= 2b
 PORT ?= 8089
 WEB_PORT ?= 8090
+# 同时在途的请求数：serve 按它开服务端槽位（每槽位 4096 上下文），infer 按它开线程；WORKERS=1 是逐条串行的参照配置
+WORKERS ?= 4
 IMAGE ?= ghcr.io/ggml-org/llama.cpp:server-cuda
-PYTHON ?= python3
+# Python 依赖（pypinyin）由 uv 管理；首次运行会按 uv.lock 创建 .venv
+PYTHON ?= uv run python
 MODEL_DIR ?= $(HOME)/.cache/52hz/models
 RUNS_DIR ?= runs
 DECODER ?= ranked
@@ -35,6 +38,7 @@ endif
 help:
 	@printf '%s\n' 'make prepare [MODEL=2b|27b] 下载镜像及所选权重，不启动服务（默认 2b）' \
 	  'make serve [MODEL=2b|27b]   准备缺少的资源，再启动本地 Qwen' \
+	  'make ... WORKERS=4          同时在途的请求数（serve 和 infer 要一致；默认 4，1 为串行）' \
 	  'make status / make logs     检查是否就绪 / 跟随服务日志' \
 	  'make web                    启动浏览器实验台（WEB_PORT=8090）' \
 	  'make smoke [CONTEXT=...]    用 KEYS 和 CONTEXT 发一条输入法请求' \
@@ -45,7 +49,8 @@ help:
 	  'make requests > FILE        导出不含答案的 JSONL 请求' \
 	  'make infer                  从 REQUESTS 读取，向 RESPONSES 写入模型响应' \
 	  'make score RESPONSES=FILE   为已有的模型响应 JSONL 评分' \
-	  'make benchmark MODEL=2b     运行生成的 10k benchmark（需先 make serve）'
+	  'make benchmark MODEL=27b    运行生成的 benchmark（BENCHMARK_CASES=... 指定用例，需先 make serve）' \
+	  'make ... DECODER=hint       带音节提示的单次直出解码器，只上屏不追问（默认 ranked；另有 direct）'
 
 prepare:
 	@test -n "$(HF_FILE)" || { echo 'MODEL must be 2b or 27b' >&2; exit 2; }
@@ -62,7 +67,7 @@ serve: prepare
 	docker run -d --rm --pull=never --gpus all --name $(CONTAINER) -p "127.0.0.1:$(PORT):8080" \
 	  -v "$(abspath $(MODEL_DIR)):/models:ro" \
 	  "$(IMAGE)" -m "/models/$(HF_FILE)" --alias 52hz-qwen \
-	  --host 0.0.0.0 --port 8080 -ngl 99 -c 4096 --parallel 1 --no-mmproj --reasoning off
+	  --host 0.0.0.0 --port 8080 -ngl 99 -c $$((4096 * $(WORKERS))) --parallel $(WORKERS) --no-mmproj --reasoning off
 	@echo '服务启动中。用 make logs 查看加载进度，make status 确认就绪。'
 
 status:
@@ -102,24 +107,24 @@ requests:
 	@$(PYTHON) -B tests/ime_cases.py requests
 
 infer:
-	@$(PYTHON) -B infer.py "$(ENDPOINT)" "$(REQUESTS)" "$(RESPONSES)"
+	@$(PYTHON) -B infer.py "$(ENDPOINT)" "$(REQUESTS)" "$(RESPONSES)" --workers $(WORKERS)
 
 score:
 	@test -f "$(RESPONSES)" || { echo '缺少响应文件。运行 make eval，或先运行 make infer。' >&2; exit 2; }
 	@$(PYTHON) -B tests/ime_cases.py score "$(RESPONSES)"
 
-BENCHMARK_CASES ?= /data/52hz-eval/build/noise/iteration-002/noise-10000.jsonl
+BENCHMARK_CASES ?= /data/52hz-eval/build/benchmark/iteration-003/cases.jsonl
 
 benchmark:
 	@mkdir -p "$(RUNS_DIR)"; run=$$(mktemp -d "$(RUNS_DIR)/benchmark-$(MODEL)-$$(date +%Y%m%d-%H%M%S)-XXXXXX"); \
 	  echo "Benchmark 目录：$$run"; \
 	  $(PYTHON) -B tests/benchmark_cases.py requests "$(BENCHMARK_CASES)" > "$$run/requests.jsonl"; \
-	  $(PYTHON) -B infer.py "$(ENDPOINT)" "$$run/requests.jsonl" "$$run/responses.jsonl"; \
+	  $(PYTHON) -B infer.py "$(ENDPOINT)" "$$run/requests.jsonl" "$$run/responses.jsonl" --workers $(WORKERS); \
 	  $(PYTHON) -B tests/benchmark_cases.py score "$(BENCHMARK_CASES)" "$$run/responses.jsonl" --failures "$$run/failures.jsonl" | tee "$$run/score.json"
 
 eval eval-strict:
 	@mkdir -p "$(RUNS_DIR)"; run=$$(mktemp -d "$(RUNS_DIR)/$$(date +%Y%m%d-%H%M%S)-XXXXXX"); \
 	  echo "评测目录：$$run"; \
 	  $(PYTHON) -B tests/ime_cases.py requests > "$$run/requests.jsonl"; \
-	  $(PYTHON) -B infer.py "$(ENDPOINT)" "$$run/requests.jsonl" "$$run/responses.jsonl"; \
+	  $(PYTHON) -B infer.py "$(ENDPOINT)" "$$run/requests.jsonl" "$$run/responses.jsonl" --workers $(WORKERS); \
 	  $(PYTHON) -B tests/ime_cases.py score "$$run/responses.jsonl" --failures "$$run/failures.jsonl" $(if $(filter eval,$@),--report-only) | tee "$$run/score.json"

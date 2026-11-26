@@ -1,0 +1,8 @@
+[project]
+name = "52hz-models"
+version = "0.1.0"
+description = "52Hz model adaptation, inference experiments and scoring"
+requires-python = ">=3.8"
+dependencies = [
+  "pypinyin==0.53.0",
+]

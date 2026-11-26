@@ -5,10 +5,12 @@ import socket
 import subprocess
 import tempfile
 import threading
+import time
 import unittest
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from unittest.mock import patch
 from urllib.error import URLError
+from urllib.request import Request, urlopen
 
 from infer import decision_contract, output_schema, run
 
@@ -77,6 +79,66 @@ class EvalWorkflowTests(unittest.TestCase):
                 self.assertTrue(all('expected' in row and 'actual' in row for row in failures))
             self.assertEqual(len(inputs), 2 * len(requests))
             self.assertTrue(all('keys' in row and 'expected' not in row and 'id' not in row for row in inputs))
+
+    def test_parallel_requests_overlap_and_replies_keep_request_order(self):
+        active, peak, lock = [0], [0], threading.Lock()
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                with lock:
+                    active[0] += 1
+                    peak[0] = max(peak[0], active[0])
+                time.sleep(0.05)
+                with lock:
+                    active[0] -= 1
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b'{}')
+
+            def log_message(self, *args):
+                pass
+
+        with tempfile.TemporaryDirectory() as directory, ThreadingHTTPServer(('127.0.0.1', 0), Handler) as server:
+            worker = threading.Thread(target=server.serve_forever, daemon=True)
+            worker.start()
+            try:
+                root = Path(directory)
+                source = root / 'requests.jsonl'
+                source.write_text(''.join(json.dumps({'id': f'{number:03d}', 'keys': 'ni'}) + '\n' for number in range(12)))
+                target = root / 'responses.jsonl'
+
+                def predict(endpoint, row):
+                    with urlopen(Request(endpoint + '/completion', data=b'{}'), timeout=5) as response:
+                        json.load(response)
+                    return {'id': row['id'], 'action': 'commit', 'candidates': [row['keys']]}
+
+                with patch('infer.predict', predict):
+                    run(f'http://127.0.0.1:{server.server_port}', source, target, workers=4)
+            finally:
+                server.shutdown()
+                worker.join()
+            replies = [json.loads(line) for line in target.read_text().splitlines()]
+            self.assertEqual([row['id'] for row in replies], [f'{number:03d}' for number in range(12)])
+            self.assertGreaterEqual(peak[0], 2)
+            self.assertFalse(list(Path(directory).glob('*.partial')))
+
+    def test_parallel_failure_keeps_the_replies_that_precede_it(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / 'requests.jsonl'
+            source.write_text(''.join(json.dumps({'id': f'{number:03d}', 'keys': 'ni'}) + '\n' for number in range(8)))
+            target = Path(directory) / 'responses.jsonl'
+
+            def flaky(endpoint, row):
+                if row['id'] == '004':
+                    raise URLError('offline')
+                return {'id': row['id']}
+
+            with patch('infer.predict', flaky):
+                with self.assertRaisesRegex(ValueError, '第 5 条请求未完成'):
+                    run('http://localhost', source, target, workers=3)
+            self.assertFalse(target.exists())
+            partial, = Path(directory).glob('*.partial')
+            self.assertEqual([json.loads(line)['id'] for line in partial.read_text().splitlines()], ['000', '001', '002', '003'])
 
     def test_eval_still_fails_when_service_is_unavailable(self):
         with tempfile.TemporaryDirectory() as directory, socket.socket() as reserved:

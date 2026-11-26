@@ -1,4 +1,5 @@
 /runs/
 __pycache__/
+/.venv/
 /web/node_modules/
 /web/dist/
