@@ -99,8 +99,9 @@ def ranked(post, chat, fields, prompt, actions, instruction):
         return {'error': '没有得到满足用户已选片段的完整候选。', 'search': trace}
 
     labels = dict(zip('ABCDE', sorted(pool)))
-    decision = chat('你在比较几句已经写好的输入结果。选择整句意思自然、且忠实于原始按键、上下文和记忆的一项；英文、型号和数字不要擅改。'
-                    '同样通顺时选更贴合实际按键的一项，不用近义词替换用户打出的词。choice 填标签，列表顺序没有含义。仅当有证据区分合理意图才直接提交；上下文同时支持多项或没说明指谁时，'
+    decision = chat('你在比较几句已经写好的输入结果。第一优先级是逐音节忠实于原始 keys：不能增删、概括、改写或替换 keys 没有依据的汉字，不能把“在今天”改成“今天”，也不能把正文改成新闻标题。'
+                    '第二优先级才是上下文中的语义自然度；英文、型号、数字、大小写、空格和标点不要擅改。同样保真时再选更自然的一项，不用近义词替换用户打出的词。'
+                    'choice 填标签，列表顺序没有含义。仅当有证据区分合理意图才直接提交；上下文同时支持多项或没说明指谁时，'
                     '询问能区分意图的一处，不为生僻错字打断用户。ask 的 focus 填 keys 中的原始子串，options 只填不同候选中该片段的译文。'
                     'selected 片段已确定，不再询问。\n' + instruction,
                     {**fields, 'options': labels}, judge_schema(list(labels), actions), 'ime_judge')
