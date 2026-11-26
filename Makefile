@@ -30,7 +30,7 @@ else ifeq ($(MODEL),27b)
   HF_SHA256 := 1bce504dfecd84153666928a41d8a66706f0158d3a317bc5196b72819d7dc529
 endif
 
-.PHONY: help prepare serve status smoke logs stop test requests infer score eval eval-strict web web-build web-test
+.PHONY: help prepare serve status smoke logs stop test requests infer score eval eval-strict benchmark web web-build web-test
 
 help:
 	@printf '%s\n' 'make prepare [MODEL=2b|27b] 下载镜像及所选权重，不启动服务（默认 2b）' \
@@ -44,7 +44,8 @@ help:
 	  'make eval-strict            同样生成报告，有任何错题则返回非零（CI）' \
 	  'make requests > FILE        导出不含答案的 JSONL 请求' \
 	  'make infer                  从 REQUESTS 读取，向 RESPONSES 写入模型响应' \
-	  'make score RESPONSES=FILE   为已有的模型响应 JSONL 评分'
+	  'make score RESPONSES=FILE   为已有的模型响应 JSONL 评分' \
+	  'make benchmark MODEL=2b     运行生成的 10k benchmark（需先 make serve）'
 
 prepare:
 	@test -n "$(HF_FILE)" || { echo 'MODEL must be 2b or 27b' >&2; exit 2; }
@@ -106,6 +107,15 @@ infer:
 score:
 	@test -f "$(RESPONSES)" || { echo '缺少响应文件。运行 make eval，或先运行 make infer。' >&2; exit 2; }
 	@$(PYTHON) -B tests/ime_cases.py score "$(RESPONSES)"
+
+BENCHMARK_CASES ?= /data/52hz-eval/build/noise/iteration-002/noise-10000.jsonl
+
+benchmark:
+	@mkdir -p "$(RUNS_DIR)"; run=$$(mktemp -d "$(RUNS_DIR)/benchmark-$(MODEL)-$$(date +%Y%m%d-%H%M%S)-XXXXXX"); \
+	  echo "Benchmark 目录：$$run"; \
+	  $(PYTHON) -B tests/benchmark_cases.py requests "$(BENCHMARK_CASES)" > "$$run/requests.jsonl"; \
+	  $(PYTHON) -B infer.py "$(ENDPOINT)" "$$run/requests.jsonl" "$$run/responses.jsonl"; \
+	  $(PYTHON) -B tests/benchmark_cases.py score "$(BENCHMARK_CASES)" "$$run/responses.jsonl" --failures "$$run/failures.jsonl" | tee "$$run/score.json"
 
 eval eval-strict:
 	@mkdir -p "$(RUNS_DIR)"; run=$$(mktemp -d "$(RUNS_DIR)/$$(date +%Y%m%d-%H%M%S)-XXXXXX"); \
