@@ -17,7 +17,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from pypinyin import Style, lazy_pinyin  # noqa: E402
+from pinyin import CJK  # noqa: E402
+from pypinyin import Style, pinyin  # noqa: E402
 from tests.benchmark_cases import character_errors  # noqa: E402
 from verify import align, distance  # noqa: E402
 
@@ -51,25 +52,49 @@ def edit(a, b):
     return previous[-1]
 
 
+def syllables_of(text):
+    """The readings of its Chinese characters only: punctuation, digits and letters are not syllables."""
+    import re
+    return [reading[0] for run in re.findall(CJK.pattern + '+', text) for reading in pinyin(run, style=Style.NORMAL, errors='default')]
+
+
+MEASURED = {}
+
+
+def measure(row):
+    """Everything the tables need about one reply, computed once."""
+    key = (row['variant'], row['id'])
+    if key not in MEASURED:
+        text = row['text']
+        want, got = syllables_of(row['gold']), syllables_of(text) if text else []
+        MEASURED[key] = {'exact': bool(text) and text == row['gold'],
+                         'trip': bool(text) and align(row['keys'], text)['cost'] == 0,
+                         'syllables_wrong': edit(want, got), 'syllables': len(want),
+                         'characters_wrong': character_errors(row['gold'], text) if text else len(row['gold']), 'characters': len(row['gold']),
+                         'ms': row['ms'], 'want': want, 'got': got}
+    return MEASURED[key]
+
+
 def trip(row):
-    return bool(row['text']) and align(row['keys'], row['text'])['cost'] == 0
+    return measure(row)['trip']
 
 
 def summary(rows):
+    measured = [measure(row) for row in rows]
     n = len(rows)
-    exact = sum(r['text'] == r['gold'] for r in rows)
-    rounded = sum(map(trip, rows))
-    want = [lazy_pinyin(r['gold'], style=Style.NORMAL, errors='keep') for r in rows]
-    got = [lazy_pinyin(r['text'], style=Style.NORMAL, errors='keep') for r in rows]
-    wrong = sum(edit(a, b) for a, b in zip(want, got))
-    chars = sum(character_errors(r['gold'], r['text']) for r in rows) / max(sum(len(r['gold']) for r in rows), 1)
-    ms = sorted(r['ms'] for r in rows)
-    return n, exact, rounded, wrong / max(sum(map(len, want)), 1), chars, ms[len(ms) // 2]
+    exact = sum(m['exact'] for m in measured)
+    rounded = sum(m['trip'] for m in measured)
+    wrong = sum(m['syllables_wrong'] for m in measured)
+    syllables = max(sum(m['syllables'] for m in measured), 1)
+    chars = sum(m['characters_wrong'] for m in measured) / max(sum(m['characters'] for m in measured), 1)
+    ms = sorted(m['ms'] for m in measured)
+    return n, exact, rounded, wrong / syllables, chars, ms[len(ms) // 2]
 
 
 def main():
-    args = [a for a in sys.argv[1:] if not a.startswith('--')]
-    taxonomy = sys.argv[sys.argv.index('--taxonomy') + 1] if '--taxonomy' in sys.argv else None
+    rest = sys.argv[1:]
+    taxonomy = rest[rest.index('--taxonomy') + 1] if '--taxonomy' in rest else None
+    args = [a for a in rest if not a.startswith('--') and a != taxonomy]
     rows = []
     for path in args:
         rows += [json.loads(line) for line in open(path, encoding='utf-8')]
@@ -108,8 +133,7 @@ def main():
     if taxonomy:
         kinds = collections.Counter()
         for r in (r for r in rows if r['variant'] == taxonomy and not trip(r)):
-            want = lazy_pinyin(r['gold'], style=Style.NORMAL, errors='keep')
-            got = lazy_pinyin(r['text'], style=Style.NORMAL, errors='keep')
+            want, got = measure(r)['want'], measure(r)['got']
             for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, want, got, autojunk=False).get_opcodes():
                 if tag == 'equal':
                     continue
