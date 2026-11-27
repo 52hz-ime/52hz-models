@@ -80,6 +80,39 @@ class EvalWorkflowTests(unittest.TestCase):
             self.assertEqual(len(inputs), 2 * len(requests))
             self.assertTrue(all('keys' in row and 'expected' not in row and 'id' not in row for row in inputs))
 
+    def test_eval_runs_the_default_decoder_end_to_end(self):
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                payload = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+                # The default decoder takes the reply as plain text; asking on demand still uses the JSON contract.
+                content = '{"action":"ask","focus":"kaihu","options":["开会","开户"]}' if 'response_format' in payload else '明天开会'
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(json.dumps({'choices': [{'message': {'content': content}}]}).encode())
+
+            def log_message(self, *args):
+                pass
+
+        environment = {key: value for key, value in os.environ.items() if key not in ('DECODER', 'IME_DECODER')}
+        with tempfile.TemporaryDirectory() as directory, ThreadingHTTPServer(('127.0.0.1', 0), Handler) as server:
+            worker = threading.Thread(target=server.serve_forever, daemon=True)
+            worker.start()
+            try:
+                process = subprocess.run(['make', 'eval', f'PORT={server.server_port}', f'RUNS_DIR={directory}'],
+                                         cwd=ROOT, env=environment, capture_output=True, text=True)
+            finally:
+                server.shutdown()
+                worker.join()
+            self.assertEqual(process.returncode, 0, process.stderr)
+            batch, = Path(directory).iterdir()
+            requests = [json.loads(line) for line in (batch / 'requests.jsonl').read_text().splitlines()]
+            replies = [json.loads(line) for line in (batch / 'responses.jsonl').read_text().splitlines()]
+            self.assertEqual([row['id'] for row in requests], [row['id'] for row in replies])
+            committed = [reply for reply in replies if reply.get('candidates')]
+            self.assertTrue(committed)
+            # A plain reply became the one candidate: the hinted decoder ran, not the two-stage search with its pool.
+            self.assertTrue(all(reply['candidates'] == ['明天开会'] and 'search' not in reply for reply in committed))
+
     def test_parallel_requests_overlap_and_replies_keep_request_order(self):
         active, peak, lock = [0], [0], threading.Lock()
 
@@ -161,7 +194,8 @@ class EvalWorkflowTests(unittest.TestCase):
                     run('http://localhost', source, target)
             self.assertEqual(target.read_text(), 'previous run\n')
             partial, = Path(directory).glob('*.partial')
-            self.assertEqual(json.loads(partial.read_text()), {'id': 'first'})
+            first = json.loads(partial.read_text())
+            self.assertEqual((first['id'], isinstance(first['ms'], int)), ('first', True))     # every reply carries its own time
 
     def test_prepare_checks_checksum_and_reuses_download(self):
         import hashlib

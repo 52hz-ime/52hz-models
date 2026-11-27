@@ -17,7 +17,7 @@ IMAGE ?= ghcr.io/ggml-org/llama.cpp:server-cuda
 PYTHON ?= uv run python
 MODEL_DIR ?= $(HOME)/.cache/52hz/models
 RUNS_DIR ?= runs
-DECODER ?= ranked
+DECODER ?= hint
 export IME_DECODER := $(DECODER)
 REQUESTS ?= /tmp/52hz-requests.jsonl
 RESPONSES ?= /tmp/52hz-responses.jsonl
@@ -55,7 +55,7 @@ help:
 	  'make infer                  从 REQUESTS 读取，向 RESPONSES 写入模型响应' \
 	  'make score RESPONSES=FILE   为已有的模型响应 JSONL 评分' \
 	  'make benchmark MODEL=27b    运行生成的 benchmark（BENCHMARK_CASES=... 指定用例，需先 make serve）' \
-	  'make ... DECODER=hint       带音节提示的单次直出解码器，只上屏不追问（默认 ranked；另有 direct）'
+	  'make ... DECODER=ranked     生成、分叉、裁判的解码器，有歧义时追问（默认 hint：单次直出加校验和修复，不追问；另有 direct）'
 
 prepare:
 	@test -n "$(HF_FILE)" || { echo 'MODEL must be 2b or 27b' >&2; exit 2; }

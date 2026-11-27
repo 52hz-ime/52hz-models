@@ -4,6 +4,8 @@ from pinyin import units_of
 
 
 FLOOR, SHARE = 2, 0.3
+# A character whose reading is this many keystrokes from the keys is one a repair should look at.
+FAR = 2
 # A character with no typed letters of its own: more than any typo, so that it alone busts a short budget.
 UNTYPED = 4
 UNREACHABLE = 1 << 20
@@ -42,61 +44,74 @@ def align(keys, text):
     distance, so a character that has nothing to do with the keys is never mistaken for a few typos.
     Any other character takes itself. A typed letter that no character claims also costs one.
 
+    Among alignments that cost the same, the one with fewer characters FAR or more keystrokes from the
+    keys is kept, then the one that edits fewer characters, then the one that leaves fewer stretches of
+    unclaimed keys. So a character is only reported as far from the keys when no equally cheap alignment
+    reads it within one keystroke, and a word the text left out shows as one whole stretch between two
+    characters, not as letters taken by its neighbours or split around one of them.
+
     Returns a report: each character with the letters it was matched to and its cost, the letters nobody
-    claimed, the total cost, the budget, and whether the total is within it. `doubts` lists the characters
-    whose reading is two or more keystrokes from the keys, the ones a repair should look at.
+    claimed, in the order of the keys, and where they sit (`gaps`: one entry per stretch, with the number of
+    characters that come before it), the total cost, the budget, and whether the total is within it.
+    `doubts` lists the characters whose reading is two or more keystrokes from the keys, the ones a repair
+    should look at.
     Returns None when the text has no character at all.
     """
     units = units_of(text)
     count, length = len(units), len(keys)
     if not count:
         return None
-    best = [[UNREACHABLE] * (length + 1) for _ in range(count + 1)]
-    back = [[None] * (length + 1) for _ in range(count + 1)]
-    best[0][0] = 0
+    unreachable = (UNREACHABLE,) * 4
+    # best[row][column][after a skipped letter] is (cost, characters far from the keys, characters edited,
+    # stretches of unclaimed keys).
+    best = [[[unreachable, unreachable] for _ in range(length + 1)] for _ in range(count + 1)]
+    back = [[[None, None] for _ in range(length + 1)] for _ in range(count + 1)]
+    best[0][0][0] = (0, 0, 0, 0)
 
-    def relax(row, column, cost, trace):
-        if cost < best[row][column]:
-            best[row][column] = cost
-            back[row][column] = trace
+    def relax(row, column, after_skip, value, trace):
+        if value < best[row][column][after_skip]:
+            best[row][column][after_skip] = value
+            back[row][column][after_skip] = trace
 
     for row in range(count + 1):
         for column in range(length + 1):
-            base = best[row][column]
-            if base >= UNREACHABLE:
-                continue
-            if column < length:
-                relax(row, column + 1, base + 1, (row, column, None))
-            if row == count:
-                continue
-            readings, chinese = units[row][1], units[row][2]
-            reading = readings[0]
-            sizes = (0, len(reading) - 1, len(reading), len(reading) + 1) if chinese else (0, len(reading))
-            for size in sizes:
-                end = column + size
-                if size < 0 or end > length:
+            for after_skip in (0, 1):
+                base, far, edited, gaps = best[row][column][after_skip]
+                if base >= UNREACHABLE:
                     continue
-                piece = keys[column:end]
-                cost = UNTYPED if size == 0 and chinese else min(fit(piece, readings))
-                relax(row + 1, end, base + cost, (row, column, piece))
-            if chinese and row + 1 < count and units[row + 1][2]:
-                pair = reading + units[row + 1][1][0]
-                end = column + len(pair)
-                if end <= length:
+                if column < length:
+                    relax(row, column + 1, 1, (base + 1, far, edited, gaps + (not after_skip)), (row, column, after_skip, None))
+                if row == count:
+                    continue
+                readings, chinese = units[row][1], units[row][2]
+                reading = readings[0]
+                sizes = (0, len(reading) - 1, len(reading), len(reading) + 1) if chinese else (0, len(reading))
+                for size in sizes:
+                    end = column + size
+                    if size < 0 or end > length:
+                        continue
                     piece = keys[column:end]
-                    cost = 0 if piece == pair else distance(piece, pair)
-                    if cost <= 1:
-                        relax(row + 2, end, base + cost, (row, column, piece))
+                    cost = UNTYPED if size == 0 and chinese else min(fit(piece, readings))
+                    relax(row + 1, end, 0, (base + cost, far + (cost >= FAR), edited + bool(cost), gaps), (row, column, after_skip, piece))
+                if chinese and row + 1 < count and units[row + 1][2]:
+                    pair = reading + units[row + 1][1][0]
+                    end = column + len(pair)
+                    if end <= length:
+                        piece = keys[column:end]
+                        cost = 0 if piece == pair else distance(piece, pair)
+                        if cost <= 1:
+                            relax(row + 2, end, 0, (base + cost, far, edited + bool(cost), gaps), (row, column, after_skip, piece))
 
-    total = best[count][length]
+    last = min((0, 1), key=lambda after_skip: best[count][length][after_skip])
+    total = best[count][length][last][0]
     if total >= UNREACHABLE:
         return None
     typed, costs, skipped = [""] * count, [0] * count, []
-    row, column = count, length
+    row, column, after_skip = count, length, last
     while (row, column) != (0, 0):
-        previous_row, previous_column, piece = back[row][column]
+        previous_row, previous_column, previous_skip, piece = back[row][column][after_skip]
         if piece is None:
-            skipped.append(keys[previous_column])
+            skipped.append((row, previous_column, keys[previous_column]))
         elif row - previous_row == 2:
             # Two syllables taken together: the error sits in the half that differs from its reading.
             first, second = units[previous_row][1][0], units[previous_row + 1][1][0]
@@ -105,14 +120,24 @@ def align(keys, text):
                 at_fault = previous_row if fit(typed[previous_row], units[previous_row][1])[0] else previous_row + 1
                 costs[at_fault] = 1
         else:
-            typed[previous_row], costs[previous_row] = piece, min(fit(piece, units[previous_row][1]))
-        row, column = previous_row, previous_column
+            typed[previous_row] = piece
+            costs[previous_row] = UNTYPED if not piece and units[previous_row][2] else min(fit(piece, units[previous_row][1]))
+        row, column, after_skip = previous_row, previous_column, previous_skip
+    skipped.reverse()                                        # the order of the keys
+    gaps = []
+    for before, position, letter in skipped:
+        if gaps and (gaps[-1]["before"], gaps[-1]["at"]) == (before, position - 1):
+            gaps[-1]["letters"], gaps[-1]["at"] = gaps[-1]["letters"] + letter, position
+        else:
+            gaps.append({"before": before, "at": position, "letters": letter})
+    for gap in gaps:
+        del gap["at"]
     return {"units": [{"char": unit[0], "reading": closest(typed[index], unit[1]), "typed": typed[index], "cost": costs[index]}
                       for index, unit in enumerate(units)],
-            "skipped": skipped, "cost": total, "budget": budget(units), "consistent": total <= budget(units),
+            "skipped": [letter for _, _, letter in skipped], "gaps": gaps,
+            "cost": total, "budget": budget(units), "consistent": total <= budget(units),
             "flagged": [index for index in range(count) if costs[index]],
-            "doubts": [index for index in range(count) if costs[index] >= 2 or not typed[index]]}
-
+            "doubts": [index for index in range(count) if costs[index] >= FAR or not typed[index]]}
 
 def closest(piece, readings):
     """The reading of a character that its typed letters spell best."""

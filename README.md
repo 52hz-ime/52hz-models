@@ -46,25 +46,26 @@ make stop
 
 ## 选型回归用例
 
-默认解码器 `DECODER=ranked` 分两步，不强制切分拼音。首先使用本机 `llama.cpp` 的 `/apply-template` 和 `/completion` 从原始按键生成一句完整译文，读取 token 备选概率，再从有竞争的分叉点分别续写，最多保留五个不同整句；对可能的重字优先尝试另一条路径。这是有预算的分支搜索，不是穷尽所有解释或经过校准的置信度。主动 `More` 在候选不足时还会围绕指定片段提出替代整句。
-
-裁决器读完整候选、原始按键、上下文、记忆和已选译文，返回候选编号而非另写文本。候选池默认不弹给用户；`type` 只能预览，空格后有实质歧义才询问，`More` 必须查看指定片段。无合法候选或缺少有效局部选项时保留输入，不强行提交。`responses.jsonl` 和 Web 调用记录的 `search` 字段可检查生成顺序、最终选择和两个阶段的毫秒耗时。排在首选后的候选仅为备选，不代表概率排序。
-
-`DECODER=hint` 是第三种解码器：模型提出一句文字，规则检查它，对不上再做有限的修复。算法见 52hz-docs 的[解码算法](../52hz-docs/docs/decoding-algorithm.md)。
+默认解码器是 `DECODER=hint`：模型提出一句文字，规则检查它，对不上再做有限的修复，不追问。算法见 52hz-docs 的[解码算法](../52hz-docs/docs/decoding-algorithm.md)。
 
 1. **提议**：一次普通对话调用，带示例、上文、记忆和一行机械切分的音节提示（`切分：jin tian wan shang chi fan?`，`?` 标出可能按错的位置），回复就是唯一的候选。回复必须保留 `selected` 中用户选定的文字，否则退回 JSON 契约。
-2. **校验**：把回复的每个字和它该敲出的按键逐一对齐。一步按键错误记 1，跨音节边界的字母颠倒也只记 1，口音合并（en/eng、平翘舌等）记 1，和按键无关的字按实际距离记。额度是 `max(2, round(0.3 × 音节数))`。
-3. **修复回路**：总分超出额度才进入，最多两轮。每轮只告诉模型它自己写的那句话里哪几个字对不上、按键在那里还能读成哪些音节，让它只改这几处。改写后的句子重新校验，分数更低才接受；有词表时（`LEXICON`）还要求没有引入语料里没见过的字组。
+2. **校验**：把回复的每个字和它该敲出的按键逐一对齐。一步按键错误记 1，跨音节边界的字母颠倒也只记 1，口音合并（en/eng、平翘舌等）记 1，和按键无关的字按实际距离记。额度是 `max(2, round(0.3 × 音节数))`。总代价相同时，依次取“差两步的字”最少、改动字数最少、缺口最少的对齐：一个字只有在任何一种同样省事的对齐下都读不通时才算差得远；回复漏掉的词显示成某一位置上的一整段字母，而不是被两边的字分掉。
+   用户打的标点由规则保证原样：漏掉的按位置补回去，没打的删掉，半角不写成全角。这一步不调模型，汉字不动。
+3. **修复回路**：回复超出额度时进入；在额度内、但分数 ≥ 2 并且校验器有证据时也进入。证据指：有读音和按键差两步以上的字，或有连续两个以上字母没有字认领，那是回复漏了字。只差一步的字本来就是按键的合法读法，不拿去改；单个多余的字母是多敲了一下，也不提示。每轮告诉模型哪几个字对不上、按键在那里还能读成哪些音节，以及漏掉的字母在第几个字之前或之后、能读成什么。改写后的句子重新校验，分数更低才接受；有词表时（`LEXICON`）还要求没有引入语料里没见过的字组，也不能把汉字改成字母。一轮没有进展就停，最多两轮。
 4. **仍然超出额度**的回复不上屏，返回 error，原文在 `rejected` 里。
 
 `type` 返回 preview，`space` 返回 commit，不追问。每条回复带 `verify`（分数和额度）和 `repair`（进了几轮回路、修复前的原句）。音节切分只依赖内置的 424 个音节和音节频率表，`keys` 仍原样发送。
 
-同一台模型服务上执行 `make eval DECODER=direct` 可复测原先的一次生成；`make eval DECODER=ranked` 使用新算法。Web 也使用同一配置，切换时只需重启 `make web DECODER=...`，不需要重新下载模型。`make smoke` 仍是单请求连接检查。
+`DECODER=ranked` 是另一个解码器，分两步，不强制切分拼音，也是唯一会追问的一个。首先使用本机 `llama.cpp` 的 `/apply-template` 和 `/completion` 从原始按键生成一句完整译文，读取 token 备选概率，再从有竞争的分叉点分别续写，最多保留五个不同整句；对可能的重字优先尝试另一条路径。这是有预算的分支搜索，不是穷尽所有解释或经过校准的置信度。主动 `More` 在候选不足时还会围绕指定片段提出替代整句。
+
+裁决器读完整候选、原始按键、上下文、记忆和已选译文，返回候选编号而非另写文本。候选池默认不弹给用户；`type` 只能预览，空格后有实质歧义才询问，`More` 必须查看指定片段。无合法候选或缺少有效局部选项时保留输入，不强行提交。`responses.jsonl` 和 Web 调用记录的 `search` 字段可检查生成顺序、最终选择和两个阶段的毫秒耗时。排在首选后的候选仅为备选，不代表概率排序。
+
+`DECODER=direct` 是最早的一次生成，用 `make eval DECODER=direct` 复测。三种解码器用同一台模型服务，加 `DECODER=...` 即可切换，不需要重新下载模型。Web 实验台也读同一个 `DECODER`，切换后重启 `make web`。`make smoke` 仍是单请求连接检查。
 
 `make eval` 一次完成请求导出、逐条推理和评分。每次运行打印新的 `runs/<时间>-<随机后缀>/` 目录，不覆盖旧结果：
 
 - `requests.jsonl`：发给推理程序的盲测输入，不含标准答案。
-- `responses.jsonl`：带请求 ID 的模型响应。连接失败或推理中断时，只保留 `.partial` 文件，不生成评分；模型输出不是有效 JSON 时，该条记为错误并继续评测。
+- `responses.jsonl`：带请求 ID 的模型响应和这条请求的耗时 `ms`（毫秒，含校验和修复回路的调用）。连接失败或推理中断时，只保留 `.partial` 文件，不生成评分；模型输出不是有效 JSON 时，该条记为错误并继续评测。
 - `score.json`：通过数、失败 ID 和错误提交 ID。两阶段结果另有 `sentence_search`，只统计有标准全文的用例：`in_pool / target_sentences` 是正确句进池率，`winner_correct / in_pool` 是进池后的选中率；这两项不代替交互验收。`make eval` 返回成功表示评测完整执行，不表示模型全部答对；连接、输入或报告写入出错仍会返回非零。CI 需要全部通过时用 `make eval-strict`，对已有答卷执行 `make score` 也保留严格行为。
 - `failures.jsonl`：逐条列出不通过用例的请求、期望和实际回复。用 `head -1 <本次目录>/failures.jsonl | jq .` 查看第一处差异。
 
@@ -94,11 +95,11 @@ make score RESPONSES=/tmp/52hz-responses.jsonl
 
 ## 生成 benchmark
 
-`make benchmark` 对 `BENCHMARK_CASES`（默认 52hz-eval 生成的 `benchmark/iteration-003/cases.jsonl`）导出盲测请求、逐条推理并评分，产物在 `runs/benchmark-<模型>-<时间>-<随机后缀>/`。试跑可以用分层小集：
+`make benchmark` 对 `BENCHMARK_CASES`（默认 52hz-eval 生成的 `benchmark/iteration-003/cases.jsonl`，全量 65,280 条）导出盲测请求、逐条推理并评分，产物在 `runs/benchmark-<模型>-<时间>-<随机后缀>/`。平时用按来源和噪声类型分层抽出的试跑集，`trial-3000.jsonl` 包含更小的 `trial-300.jsonl`。`holdout-3000.jsonl`（52hz-eval 的 `make holdout TRIAL=3000`）是和它们没有重叠的验证集：在试跑集上调出来的规则，要在它上面再量一次。
 
 ```sh
-make benchmark MODEL=27b DECODER=hint WORKERS=1 \
-  BENCHMARK_CASES=/data/52hz-eval/build/benchmark/iteration-003/trial-300.jsonl
+make benchmark MODEL=27b WORKERS=1 \
+  BENCHMARK_CASES=/data/52hz-eval/build/benchmark/iteration-003/trial-3000.jsonl
 ```
 
 `score.json` 按产品定义分开统计，分母是全部用例：
@@ -111,4 +112,4 @@ make benchmark MODEL=27b DECODER=hint WORKERS=1 \
 - `char_error_rate`：上屏结果相对标准答案的字错率。
 - `by_operation`、`by_errors`、`by_source`、`by_length`：按噪声操作、输入里的错误个数、来源和长度分组，每组都带上面各项。
 
-`failures.jsonl` 每行是一条失败用例的 `expected` 和 `actual`。在 27B、4 并发下，`ranked` 每条约 2 秒，`hint` 每条约 0.3 秒。串行时 300 条 `hint` 用 120 秒，带校验和修复回路的用 226 秒：约四成的输入会多一到两次调用。
+`failures.jsonl` 每行是一条失败用例的 `expected` 和 `actual`。在 27B、4 并发下，`ranked` 每条约 2 秒，`hint` 每条约 0.3 秒。3000 条上，首次调用中位约 380 ms；约一半的提交会进修复回路、多一次调用（中位多 0.47 秒），其中两轮的不到一成。

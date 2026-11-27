@@ -9,11 +9,14 @@ from concurrent.futures import ThreadPoolExecutor
 from http.client import HTTPException
 from pathlib import Path
 from tempfile import NamedTemporaryFile
+from time import perf_counter
+from unicodedata import category
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from candidate_search import ranked
 from lexicon import PAIRS
+from pinyin import CJK, CJK_RUN
 from syllables import alternatives, segment
 from verify import align, summary
 
@@ -38,21 +41,25 @@ HINT_EXAMPLES = [
     {"context": "会议安排：", "keys": "mingtian9diankaizongjiehui", "text": "明天9点开总结会"},
     {"context": "车票订好了。", "keys": "wozaihuochezhan", "text": "我在火车站"},
     {"keys": "woyaomaiyigeiPhone15", "text": "我要买一个iPhone15"},
-    {"keys": "jintianwanshangchifann", "text": "今天晚上吃饭。"},
-    {"keys": "jintianwanshangcihfan", "text": "今天晚上吃饭。"},
-    {"keys": "jintianwanshangchifsn", "text": "今天晚上吃饭。"},
-    {"keys": "jintianwannshangchifan", "text": "今天晚上吃饭。"},
-    {"keys": "zhegewentiwomenmingtianzaitaolunba", "text": "这个提案我们明天再讨论吧"},
+    {"keys": "jintianwanshangchifann", "text": "今天晚上吃饭"},
+    {"keys": "jintianwanshangcihfan", "text": "今天晚上吃饭"},
+    {"keys": "jintianwanshangchifsn", "text": "今天晚上吃饭"},
+    {"keys": "jintianwannshangchifan", "text": "今天晚上吃饭"},
+    {"keys": "zhegewentiwomenmingtianzaitaolunba", "text": "这个问题我们明天再讨论吧"},
     {"context": "上次聊到开会。", "keys": "mingtianwoyoukaihuile", "text": "明天我又开会了"},
     {"context": "银行资料带齐了。", "keys": "mingtianwoqukaihu", "text": "明天我去开户"},
     {"context": "周报请发给组长。", "memory": ["我们组的组长叫王静。"], "keys": "qingfageiwangjing", "text": "请发给王静"},
     {"context": "银行已经预约好了。", "selected": {"kaihu": "开会"}, "keys": "mingtiankaihu", "text": "明天开会"},
 ]
 
-REPAIR_SYSTEM = """用户打了一段带错误的拼音。「转写」是第一次的转换结果，但有几处和按键对不上，列在「对不上」里：每一处给出按键在这一位置的字母，以及它在一步按键错误或口音合并之内还能读成的音节。
-只改这些位置，让每个字都对得上按键的读音；其余文字保持不变，并结合上文选最通顺的读法。只输出改写后的文字。"""
+REPAIR_SYSTEM = """用户打了一段带错误的拼音。「转写」是第一次的转换结果，但有几处和按键对不上，列在「对不上」里：每一处给出按键在这一位置的字母，以及它在一步按键错误或口音合并之内还能读成的音节；写着“没有对应上”的地方，是转写在那里漏了字。
+只改这些位置，让每个字都对得上按键的读音，漏掉的字补回去；其余文字保持不变，并结合上文选最通顺的读法。只输出改写后的文字。"""
 ROUNDS = 2
 POSITIONS = 4
+# A reply that needs this many errors is looked at again, within its budget or not, when the verifier has
+# evidence against it; fewer unclaimed letters than GAP is a stray keystroke, not a word left out.
+ENTER = 2
+GAP = 2
 
 
 def hint_context(fields):
@@ -67,17 +74,32 @@ def hint_user(fields):
 
 
 def problems(report):
-    """The positions a repair should look at: the characters far from the keys, or when there are none but
-    the whole sentence is over budget, the characters that needed an error."""
-    positions = report["doubts"] or report["flagged"]
+    """What a repair should look at.
+
+    The characters the verifier has evidence against, and every stretch of keys that no character claims,
+    with where it sits in the sentence and how it reads: that is where the reply left something out. A
+    reading one keystroke from the keys is a valid reading; such characters are listed only when the
+    sentence is over its budget and there is nothing else to point at.
+    """
     lines = []
-    for index in positions[:POSITIONS]:
+    gaps = [gap for gap in report["gaps"] if len(gap["letters"]) >= GAP]
+    for index in (report["doubts"] or ([] if gaps else report["flagged"]))[:POSITIONS]:
         unit = report["units"][index]
         line = f"第{index + 1}个字「{unit['char']}」读作 {unit['reading']}，按键这一处是 {unit['typed'] or '空'}"
         others = alternatives(unit["typed"], (unit["reading"], unit["typed"]))
         lines.append(line + (f"，也可以读作 {' / '.join(others)}" if others else ""))
-    if report["skipped"]:
-        lines.append("按键里多出、没有对应上的字母：" + " ".join(report["skipped"]))
+    for gap in gaps:
+        letters = gap["letters"]
+        before = gap["before"]
+        if before == 0:
+            where = "句首"
+        elif before >= len(report["units"]):
+            where = "句末"
+        else:
+            where = f"第{before}个字「{report['units'][before]['char']}」之前"
+        lines.append(f"{where}有 {len(letters)} 个字母没有对应上：{letters}，可以读作 {segment(letters)}")
+    if not lines:
+        lines.append(f"整句要 {report['cost']} 个错误才能解释按键，超过了 {report['budget']} 的额度；请重新考虑各字的读法")
     return lines
 
 
@@ -96,12 +118,92 @@ def repair(post, fields, text, report):
     content = packet['choices'][0]['message']['content']
     revised = content.strip() if isinstance(content, str) else ''
     chosen = fields.get('selected', {}).values()
-    if not revised or revised == text or any(value not in revised for value in chosen):
+    # A rewrite that turns characters into letters, the keys echoed back for instance, fits the keys only
+    # because letters match themselves; the decoder turns pinyin into characters and never the other way.
+    # Writing what was typed in capitals in lower case is allowed: it turns no character into letters.
+    turned_into_letters = set(filter(str.islower, revised)) - set(filter(str.islower, text)) and characters(revised) < characters(text)
+    if not revised or revised == text or any(value not in revised for value in chosen) or turned_into_letters:
         return text, report
     second = align(fields['keys'], revised)
     if not second or second['cost'] >= report['cost'] or (PAIRS.loaded and PAIRS.novel(revised, text)):
         return text, report
     return revised, second
+
+
+def characters(value):
+    """How many Chinese characters a text has."""
+    return sum(map(len, CJK_RUN.findall(value)))
+
+
+def unfinished(report):
+    """Whether a reply still needs repair.
+
+    Over its budget, always. Within it, when it needs ENTER or more errors and the verifier has evidence
+    against it: a reading two or more keystrokes from the keys, or a stretch of keys no character claims.
+    """
+    if not report['consistent']:
+        return True
+    # Only a reading two or more keystrokes away counts; a comma nobody typed is not evidence of a misreading.
+    far = [index for index in report['doubts'] if report['units'][index]['cost'] >= ENTER]
+    return report['cost'] >= ENTER and bool(far or any(len(gap['letters']) >= GAP for gap in report['gaps']))
+
+
+def settle(post, fields, text, report):
+    """Repair a reply until it explains the keys or a round stops improving it.
+
+    Returns the reply, its report and the number of rounds run.
+    """
+    rounds = 0
+    while unfinished(report) and rounds < ROUNDS:
+        earlier = report['cost']
+        rounds += 1
+        text, report = repair(post, fields, text, report)
+        if report['cost'] == earlier:
+            break
+    return text, report, rounds
+
+
+def literal(char):
+    """Punctuation, a symbol or a space: typed as itself, or not typed at all."""
+    return category(char)[0] in "PSZ"
+
+
+def tidied(fields, text):
+    """Give the typed punctuation its due, without the model: keep it as typed, and add none the user did not type.
+
+    Returns the text and its report. Chinese characters and typed letters and digits are never touched.
+    """
+    report = align(fields['keys'], text)
+    unclaimed = lambda before: "".join(gap["letters"] for gap in report["gaps"] if gap["before"] == before)
+    pieces = []
+    for index, unit in enumerate(report["units"]):
+        gap = unclaimed(index)
+        if gap and all(map(literal, gap)):
+            pieces.append(gap)                       # a comma the reply left out, where the user typed it
+        char, typed = unit["char"], unit["typed"]
+        if not CJK.match(char) and literal(char) and (not typed or literal(typed)):
+            if typed:
+                pieces.append(typed)                 # as typed: ? stays ?, not ？
+        else:
+            pieces.append(char)                      # punctuation nobody typed is left out
+    tail = unclaimed(len(report["units"]))
+    pieces.append(tail if tail and all(map(literal, tail)) else "")
+    revised = "".join(pieces)
+    if revised == text:
+        return text, report
+    second = align(fields["keys"], revised)
+    return (revised, second) if second and second["cost"] < report["cost"] else (text, report)
+
+
+def looked_after(post, fields, text):
+    """Everything that follows a first reply before it is shown as final.
+
+    The typed punctuation is put right without the model, the reply is repaired while the verifier has
+    evidence against it, and the punctuation is put right again. Returns the text, its report and the rounds.
+    """
+    text, report = tidied(fields, text)
+    text, report, rounds = settle(post, fields, text, report)
+    return (*tidied(fields, text), rounds)
 
 
 def hinted(post, fields, actions):
@@ -126,13 +228,10 @@ def hinted(post, fields, actions):
         return {'error': 'invalid model output', 'raw': content}
     if any(chosen not in text for chosen in fields.get('selected', {}).values()):
         return None
+    text, report = tidied(fields, text)
     trace = {'rounds': 0, 'before': report['cost'], 'first': text}
-    if actions != ('preview',) and not report['consistent']:
-        for _ in range(ROUNDS):
-            trace['rounds'] += 1
-            text, report = repair(post, fields, text, report)
-            if report['consistent']:
-                break
+    if actions != ('preview',):
+        text, report, trace['rounds'] = looked_after(post, fields, text)
     trace['after'] = report['cost']
     if actions != ('preview',) and not report['consistent']:
         return {'error': '首选解释不了这串按键，保留原始输入供继续编辑。', 'rejected': text, 'verify': summary(report), 'repair': trace}
@@ -188,7 +287,7 @@ def predict(endpoint, row):
         except (ValueError, TypeError):
             return {'error': 'invalid model output', 'raw': content}
 
-    mode = os.environ.get('IME_DECODER', 'ranked')
+    mode = os.environ.get('IME_DECODER', 'hint')
     # The hinted decoder handles typing and commits; asking on demand and dropped selections use the JSON contract.
     result = hinted(post, fields, actions) if mode == 'hint' and row['event'] in ('type', 'space') else None
     if result is None:
@@ -219,14 +318,17 @@ def infer_rows(endpoint, rows, workers):
     """Infer the rows with at most `workers` requests in flight and yield the replies in request order."""
     def attempt(item):
         number, row = item
+        started = perf_counter()
         try:
-            return predict(endpoint, row)
+            reply = predict(endpoint, row)
         except HTTPError as error:
             raise ValueError(f'第 {number} 条请求 HTTP {error.code}: {error.read(500).decode(errors="replace")}') from error
         except (OSError, HTTPException) as error:
             raise ValueError(f'第 {number} 条请求未完成：{error}。请检查 make status / make serve。') from error
         except (ValueError, KeyError, TypeError, IndexError) as error:
             raise ValueError(f'第 {number} 条请求或服务响应格式错误：{error}') from error
+        # Wall-clock time of the whole request, the verification and any repair calls included.
+        return {**reply, 'ms': round((perf_counter() - started) * 1000)}
 
     if workers <= 1:
         for item in rows:

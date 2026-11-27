@@ -22,7 +22,7 @@ class VerifyTests(unittest.TestCase):
         self.assertEqual(self.flagged("mingtiaqnu", "明天去"), (1, True, [("天", "tiaq")]))    # transposed across a boundary
         self.assertEqual(self.flagged("jintianfenhenda", "今天风很大"), (1, True, [("风", "fen")]))  # en/eng merged
         self.assertEqual(self.flagged("wosisicuanren", "我是四川人"), (2, True, [("是", "si"), ("川", "cuan")]))
-        self.assertEqual(self.flagged("lauiyuantyu", "来源于"), (2, True, [("来", "laui"), ("于", "tyu")]))
+        self.assertEqual(self.flagged("lauiyuantyu", "来源于"), (2, True, [("来", "laui")]))      # an extra u, and a stray t
 
     def test_a_less_common_reading_is_not_a_typo(self):
         self.assertEqual(self.flagged("kelashi", "柯拉什"), (0, True, []))
@@ -51,6 +51,42 @@ class VerifyTests(unittest.TestCase):
         report = align("woyaotianqushanghaikanpengyou", "我要去上海看朋友")
         self.assertFalse(report["consistent"])
         self.assertTrue(report["doubts"] or report["skipped"])
+
+    def test_letters_nobody_claims_keep_their_order_and_say_where_they_sit(self):
+        # 未来 is left out: it shows as one stretch after the second character, and the neighbours stay clean.
+        report = align("worenweiweinaibutieshibukebimiandehuati。", "我认为补贴是不可避免的话题。")
+        self.assertEqual((report["cost"], report["skipped"], report["gaps"]),
+                         (6, ["w", "e", "i", "n", "a", "i"], [{"before": 3, "letters": "weinai"}]))
+        self.assertEqual([(unit["char"], unit["typed"]) for unit in report["units"][:4]], [("我", "wo"), ("认", "ren"), ("为", "wei"), ("补", "bu")])
+        self.assertEqual(report["doubts"], [])
+        # A stray letter is one keystroke too many, not a character to repair: it is not charged to 源 or 于.
+        report = align("lauiyuantyu", "来源于")
+        self.assertEqual([(gap["before"], gap["letters"]) for gap in report["gaps"]], [(2, "t")])
+        self.assertEqual([unit["char"] for unit in report["units"] if unit["cost"]], ["来"])
+        report = align("woxiangchifanhaone", "我想吃")
+        self.assertEqual((report["cost"], report["gaps"]), (8, [{"before": 3, "letters": "fanhaone"}]))     # past the end
+        report = align("woxiangyaochifan", "我想吃")                  # two words left out, on either side of 吃
+        self.assertEqual([(gap["before"], gap["letters"]) for gap in report["gaps"]], [(2, "yao"), (3, "fan")])
+        report = align("jintianwan", "今天")
+        self.assertEqual([(gap["before"], gap["letters"]) for gap in report["gaps"]], [(2, "wan")])
+
+    def test_the_character_costs_add_up_to_the_total(self):
+        # One untyped Chinese character counts UNTYPED in the total, so it must read UNTYPED in its row too.
+        for keys, text in [("jintianwanshangchifanhaone", "我想吃"), ("nihaoma", "你好吗!"), ("jintianwanshangchi", "今天晚上吃饭"),
+                           ("woxiangchifan", "我想吃"), ("mingtian9dian，", "明天9点,")]:
+            with self.subTest(keys=keys, text=text):
+                report = align(keys, text)
+                self.assertEqual(report["cost"], sum(unit["cost"] for unit in report["units"]) + len(report["skipped"]))
+        self.assertEqual([unit["cost"] for unit in align("jintianwanshangchi", "今天晚上吃饭")["units"]], [0, 0, 0, 0, 0, 4])
+
+    def test_a_character_is_far_from_the_keys_only_when_no_equally_cheap_alignment_reads_it_near(self):
+        # men mistyped as meng and mai with its a dropped share one g. Charging the g to 买 makes 买 look two
+        # keystrokes off; the alignment that spreads the cost over 们 and 买 is just as cheap and has no such character.
+        report = align("womengmidebaodoushijishikjuaidehaoba", "我们买的包都是几十块的好吧")
+        self.assertEqual((report["cost"], [report["units"][index]["char"] for index in report["doubts"]]), (3, []))
+        # 用 for yi cannot be read near the keys whatever the alignment.
+        report = align("jintianwanshangchiyidunhenhaochidefan", "今天晚上吃用顿很好吃的饭")
+        self.assertEqual([report["units"][index]["char"] for index in report["doubts"]], ["用"])
 
     def test_nothing_to_align(self):
         self.assertIsNone(align("nihaoma", ""))
