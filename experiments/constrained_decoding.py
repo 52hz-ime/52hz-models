@@ -39,8 +39,25 @@ def readers(known=None):
 
 
 def counted(path):
-    """The single characters the word list has counted."""
-    return {json.loads(line)['word'] for line in open(path, encoding='utf-8') if len(json.loads(line)['word']) == 1}
+    """How often the word list counted each single character."""
+    counts = {}
+    for line in open(path, encoding='utf-8'):
+        row = json.loads(line)
+        if len(row['word']) == 1:
+            counts[row['word']] = row['count']
+    return counts
+
+
+def frequent(path, keep=None):
+    """Readers limited to the characters the word list counted, the most frequent first.
+
+    With `keep`, only the first `keep` characters of each reading are admitted. A reading none of whose
+    characters were counted is left out.
+    """
+    counts = counted(path)
+    table = readers(set(counts))
+    ordered = {reading: ''.join(sorted(chars, key=lambda char: (-counts[char], char))) for reading, chars in table.items()}
+    return ordered if keep is None else {reading: chars[:keep] for reading, chars in ordered.items()}
 
 
 READERS = readers()
@@ -70,7 +87,7 @@ def main():
     rest = sys.argv[1:]
     if '--chars-from' in rest:
         at = rest.index('--chars-from')
-        READERS = readers(counted(rest[at + 1]))
+        READERS = frequent(rest[at + 1])
         del rest[at:at + 2]
     args = [a for a in rest if not a.startswith('--')]
     if '--probe' in sys.argv:
