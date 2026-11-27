@@ -85,7 +85,9 @@ def align(keys, text):
                     continue
                 readings, chinese = units[row][1], units[row][2]
                 reading = readings[0]
-                sizes = (0, len(reading) - 1, len(reading), len(reading) + 1) if chinese else (0, len(reading))
+                # A character with several readings may be typed as any of them, and they are not all the same length.
+                sizes = sorted({size for other in readings for size in (len(other) - 1, len(other), len(other) + 1)} | {0}) \
+                    if chinese else (0, len(reading))
                 for size in sizes:
                     end = column + size
                     if size < 0 or end > length:

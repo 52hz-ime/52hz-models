@@ -4,7 +4,7 @@ import os
 import unittest
 from unittest.mock import patch
 
-from infer import HINT_EXAMPLES, REPAIR_SYSTEM, predict, tidied, unfinished
+from infer import HINT_EXAMPLES, REPAIR_SYSTEM, predict, problems, tidied, unfinished
 from verify import align
 
 
@@ -79,6 +79,12 @@ class HintDecoderTests(unittest.TestCase):
         self.assertIn('error', reply)
         self.assertEqual(reply['rejected'], bad)
         self.assertEqual(reply['repair'], {'rounds': 1, 'before': 3, 'after': 3, 'first': bad})
+
+    def test_when_no_position_can_be_named_the_model_is_told_the_cost_and_only_the_real_overrun(self):
+        # Three stray letters, each on its own, name no position; only a real overrun is called one.
+        self.assertEqual(problems(align('jintianbwanxshangchifanz', '今天晚上吃饭')),
+                         ['整句要 3 个错误才能解释按键，超过了 2 的额度；请重新考虑各字的读法'])
+        self.assertEqual(problems(align('jintianbwanxshangchifan', '今天晚上吃饭')), ['整句要 2 个错误才能解释按键；请重新考虑各字的读法'])
 
     def test_the_repair_is_told_where_the_reply_left_something_out(self):
         row = {'id': 'case', 'event': 'space', 'keys': 'woxiangchifanhaone', 'context': ''}

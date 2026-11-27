@@ -83,10 +83,9 @@ def main():
     rows = [json.loads(line) for line in open(cases_path, encoding='utf-8')]
     with out.open('a', encoding='utf-8') as handle:
         for row in rows:
-            fields = {key: row[key] for key in ('keys', 'context') if key in row}
             started = time.perf_counter()
             reply = post({'model': '52hz-qwen', 'temperature': 0, 'max_tokens': 256, 'grammar': grammar(row['text']),
-                          'messages': prompt(variant, fields)})
+                          'messages': prompt(variant, row)})
             text = (reply['choices'][0]['message']['content'] or '').strip()
             handle.write(json.dumps({'variant': variant + ' +grammar', 'id': row['id'], 'text': text, 'gold': row['text'], 'keys': row['keys'],
                                      'source': row['source_id'], 'context': bool(row.get('context')), 'ms': round((time.perf_counter() - started) * 1000),

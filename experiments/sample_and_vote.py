@@ -31,8 +31,7 @@ def main():
     rows = [json.loads(line) for line in open(cases_path, encoding='utf-8')]
     with out.open('a', encoding='utf-8') as handle:
         for row in rows:
-            fields = {key: row[key] for key in ('keys', 'context') if key in row}
-            messages = prompt(variant, fields)
+            messages = prompt(variant, row)
             started, drawn = time.perf_counter(), []
             for number in range(samples):
                 text = post({'model': '52hz-qwen', 'temperature': temperature, 'top_p': 0.95, 'max_tokens': 256, 'seed': number + 1,
@@ -41,7 +40,7 @@ def main():
             clean = [sample['text'] for sample in drawn if sample['cost'] == 0]
             votes = collections.Counter(clean)
             best = votes.most_common(1)[0][0] if votes else (min((s for s in drawn if s['cost'] is not None), key=lambda s: s['cost'])['text'] if any(s['cost'] is not None for s in drawn) else '')
-            handle.write(json.dumps({'variant': variant, 'id': row['id'], 'text': best, 'gold': row['text'], 'keys': row['keys'], 'source': row['source_id'],
+            handle.write(json.dumps({'variant': f'{variant} + {samples} samples, keep what reads back', 'id': row['id'], 'text': best, 'gold': row['text'], 'keys': row['keys'], 'source': row['source_id'],
                                      'context': bool(row.get('context')), 'ms': round((time.perf_counter() - started) * 1000), 'samples': samples, 'temperature': temperature,
                                      'clean': len(clean), 'distinct_clean': len(votes), 'votes': votes.most_common(3),
                                      'first': drawn[0]['text'], 'first_cost': drawn[0]['cost']}, ensure_ascii=False) + '\n')

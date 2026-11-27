@@ -88,6 +88,11 @@ class VerifyTests(unittest.TestCase):
         report = align("jintianwanshangchiyidunhenhaochidefan", "今天晚上吃用顿很好吃的饭")
         self.assertEqual([report["units"][index]["char"] for index in report["doubts"]], ["用"])
 
+    def test_a_less_common_reading_of_another_length_counts_as_that_reading(self):
+        # 了得 is typed liao de. 了 read as liao is not a stray l before a syllable "iao".
+        report = align("xiangdangliaode", "相当了得")
+        self.assertEqual((report["cost"], [(unit["char"], unit["typed"]) for unit in report["units"][-2:]], report["gaps"]), (0, [("了", "liao"), ("得", "de")], []))
+
     def test_nothing_to_align(self):
         self.assertIsNone(align("nihaoma", ""))
 

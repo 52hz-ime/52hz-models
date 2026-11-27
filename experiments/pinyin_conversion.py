@@ -13,6 +13,9 @@ A variant names the form of the pinyin and what else the prompt carries, for exa
   +examples  the decoder's few-shot examples, written in the same form and without their errors
   +strict    the rule the decoder states: every character must read like its syllable, none added or left out
 
+"decoder prompt" sends exactly the messages the decoder sends before a commit: the keys as typed and the
+segmenter's line of syllables, under the decoder's system prompt, examples and context.
+
 The syllables come from the expected text, so they are exactly right: this measures what the model makes of a
 perfect pinyin sequence, not how well anything segments what was typed. Everything that is not Chinese is
 shown as typed, the way benchmark keys are made, and the joined form is the keys.
@@ -26,7 +29,7 @@ from urllib.request import Request, urlopen
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from infer import HINT_EXAMPLES, hint_context  # noqa: E402
+from infer import HINT_EXAMPLES, HINT_SYSTEM, hint_context, hint_user  # noqa: E402
 from pinyin import CJK  # noqa: E402
 from pypinyin import Style, pinyin  # noqa: E402
 
@@ -56,6 +59,10 @@ def syllables(text, form):
 
 
 def prompt(variant, row):
+    if variant == 'decoder prompt':                  # exactly what the decoder sends for a commit
+        examples = [message for example in HINT_EXAMPLES for message in ({'role': 'user', 'content': hint_user(example)}, {'role': 'assistant', 'content': example['text']})]
+        fields = {key: row[key] for key in ('keys', 'context') if key in row}
+        return [{'role': 'system', 'content': HINT_SYSTEM}, *examples, {'role': 'user', 'content': hint_user(fields)}]
     form = next(name for name in FORMS if variant.split()[0] == name)
     system = f'把{FORMS[form]}的汉语拼音转成用户想打的中文，只输出转出来的文字。' + (STRICT if '+strict' in variant else '')
     messages = [{'role': 'system', 'content': system}]
@@ -80,7 +87,7 @@ def main():
     rows = [json.loads(line) for line in open(cases_path, encoding='utf-8')]
     assert not any(row.get('noise_ops') for row in rows), 'this measures conversion without noise: the cases must be clean'
     for variant in variants:
-        assert variant.split()[0] in FORMS, variant
+        assert variant == 'decoder prompt' or variant.split()[0] in FORMS, variant
     with out.open('a', encoding='utf-8') as handle:
         for variant in variants:
             for number, row in enumerate(rows, 1):

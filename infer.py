@@ -99,7 +99,8 @@ def problems(report):
             where = f"第{before}个字「{report['units'][before]['char']}」之前"
         lines.append(f"{where}有 {len(letters)} 个字母没有对应上：{letters}，可以读作 {segment(letters)}")
     if not lines:
-        lines.append(f"整句要 {report['cost']} 个错误才能解释按键，超过了 {report['budget']} 的额度；请重新考虑各字的读法")
+        over = f"，超过了 {report['budget']} 的额度" if not report['consistent'] else ''
+        lines.append(f"整句要 {report['cost']} 个错误才能解释按键{over}；请重新考虑各字的读法")
     return lines
 
 
