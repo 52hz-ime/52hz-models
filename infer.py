@@ -13,8 +13,9 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from candidate_search import ranked
-from fidelity import reliable
-from syllables import segment
+from lexicon import PAIRS
+from syllables import alternatives, segment
+from verify import align, summary
 
 
 PROMPT = """任务：把 keys 中的连续汉语拼音按键，逐音节转换成当前要上屏的中文。只转换 keys，不回复聊天，不复述背景。
@@ -48,19 +49,70 @@ HINT_EXAMPLES = [
     {"context": "银行已经预约好了。", "selected": {"kaihu": "开会"}, "keys": "mingtiankaihu", "text": "明天开会"},
 ]
 
-def hint_user(fields):
+REPAIR_SYSTEM = """用户打了一段带错误的拼音。「转写」是第一次的转换结果，但有几处和按键对不上，列在「对不上」里：每一处给出按键在这一位置的字母，以及它在一步按键错误或口音合并之内还能读成的音节。
+只改这些位置，让每个字都对得上按键的读音；其余文字保持不变，并结合上文选最通顺的读法。只输出改写后的文字。"""
+ROUNDS = 2
+POSITIONS = 4
+
+
+def hint_context(fields):
     lines = [f"上文：{fields['context']}"] if fields.get('context') else []
     lines += [f"记忆：{item}" for item in fields.get('memory') or []]
     lines += [f"已选定：{text}（按键 {part}，不可改动）" for part, text in (fields.get('selected') or {}).items()]
-    return "\n".join([*lines, f"按键：{fields['keys']}", f"切分：{segment(fields['keys'])}"])
+    return lines
+
+
+def hint_user(fields):
+    return "\n".join([*hint_context(fields), f"按键：{fields['keys']}", f"切分：{segment(fields['keys'])}"])
+
+
+def problems(report):
+    """The positions a repair should look at: the characters far from the keys, or when there are none but
+    the whole sentence is over budget, the characters that needed an error."""
+    positions = report["doubts"] or report["flagged"]
+    lines = []
+    for index in positions[:POSITIONS]:
+        unit = report["units"][index]
+        line = f"第{index + 1}个字「{unit['char']}」读作 {unit['reading']}，按键这一处是 {unit['typed'] or '空'}"
+        others = alternatives(unit["typed"], (unit["reading"], unit["typed"]))
+        lines.append(line + (f"，也可以读作 {' / '.join(others)}" if others else ""))
+    if report["skipped"]:
+        lines.append("按键里多出、没有对应上的字母：" + " ".join(report["skipped"]))
+    return lines
+
+
+def repair(post, fields, text, report):
+    """Ask for the flagged characters alone to be rewritten.
+
+    The rewrite is kept only when it fits the keys better and, when the corpus word list is available,
+    introduces no character pair the corpus has never seen: a rewrite can always be made to fit the keys
+    by writing nonsense, and that must not reach the user.
+    """
+    lines = [*hint_context(fields), f"按键：{fields['keys']}", f"切分：{segment(fields['keys'])}", f"转写：{text}",
+             "对不上：", *problems(report)]
+    packet = post('/v1/chat/completions', {'model': '52hz-qwen', 'temperature': 0, 'max_tokens': 256,
+                                           'messages': [{'role': 'system', 'content': REPAIR_SYSTEM},
+                                                        {'role': 'user', 'content': "\n".join(lines)}]})
+    content = packet['choices'][0]['message']['content']
+    revised = content.strip() if isinstance(content, str) else ''
+    chosen = fields.get('selected', {}).values()
+    if not revised or revised == text or any(value not in revised for value in chosen):
+        return text, report
+    second = align(fields['keys'], revised)
+    if not second or second['cost'] >= report['cost'] or (PAIRS.loaded and PAIRS.novel(revised, text)):
+        return text, report
+    return revised, second
 
 
 def hinted(post, fields, actions):
-    """One plain-text completion with examples and a syllable hint; the reply itself is the only candidate.
+    """One completion with examples and a syllable hint, checked against the keys, repaired where it fails.
 
-    This decoder never asks: a reply that reads like the keys is shown or committed, anything else is kept
-    back. It returns None when the reply drops a selected fragment, so the caller falls back to the JSON
-    contract, which the `more` event always uses.
+    The reply is the only candidate. It is kept when it reads like the keys within the error budget;
+    otherwise the characters that do not fit are rewritten, at most ROUNDS times, and the rewrite is kept
+    only if it fits better. What still does not fit is not shown. This decoder never asks.
+
+    Returns None when the reply drops a selected fragment, so the caller falls back to the JSON contract,
+    which the `more` event always uses.
     """
     examples = [message for example in HINT_EXAMPLES
                 for message in ({'role': 'user', 'content': hint_user(example)}, {'role': 'assistant', 'content': example['text']})]
@@ -69,13 +121,23 @@ def hinted(post, fields, actions):
                                                         {'role': 'user', 'content': hint_user(fields)}]})
     content = packet['choices'][0]['message']['content']
     text = content.strip() if isinstance(content, str) else ''
-    if not text:
+    report = align(fields['keys'], text) if text else None
+    if report is None:
         return {'error': 'invalid model output', 'raw': content}
     if any(chosen not in text for chosen in fields.get('selected', {}).values()):
         return None
-    if not reliable(fields['keys'], text):
-        return {'error': '首选与按键的读音相差太远，保留原始输入供继续编辑。', 'rejected': text}
-    return {'action': 'preview' if actions == ('preview',) else 'commit', 'candidates': [text]}
+    trace = {'rounds': 0, 'before': report['cost'], 'first': text}
+    if actions != ('preview',) and not report['consistent']:
+        for _ in range(ROUNDS):
+            trace['rounds'] += 1
+            text, report = repair(post, fields, text, report)
+            if report['consistent']:
+                break
+    trace['after'] = report['cost']
+    if actions != ('preview',) and not report['consistent']:
+        return {'error': '首选解释不了这串按键，保留原始输入供继续编辑。', 'rejected': text, 'verify': summary(report), 'repair': trace}
+    return {'action': 'preview' if actions == ('preview',) else 'commit', 'candidates': [text], 'verify': summary(report),
+            'repair': trace}
 
 
 def decision_contract(row):

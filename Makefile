@@ -5,6 +5,11 @@ SHELL := /bin/bash
 MODEL ?= 2b
 PORT ?= 8089
 WEB_PORT ?= 8090
+# 词表（52hz-eval 的 make lexicon 生成）：评分的容忍层用它判断输出是否成词，修复回路用它判断改写有没有生造字组。
+# 文件不存在时，这两处检查都被跳过。
+LEXICON ?= /data/52hz-eval/build/benchmark/lexicon.jsonl
+export IME_LEXICON := $(LEXICON)
+
 # 同时在途的请求数：serve 按它开服务端槽位（每槽位 4096 上下文），infer 按它开线程；WORKERS=1 是逐条串行的参照配置
 WORKERS ?= 4
 IMAGE ?= ghcr.io/ggml-org/llama.cpp:server-cuda
@@ -120,7 +125,8 @@ benchmark:
 	  echo "Benchmark 目录：$$run"; \
 	  $(PYTHON) -B tests/benchmark_cases.py requests "$(BENCHMARK_CASES)" > "$$run/requests.jsonl"; \
 	  $(PYTHON) -B infer.py "$(ENDPOINT)" "$$run/requests.jsonl" "$$run/responses.jsonl" --workers $(WORKERS); \
-	  $(PYTHON) -B tests/benchmark_cases.py score "$(BENCHMARK_CASES)" "$$run/responses.jsonl" --failures "$$run/failures.jsonl" | tee "$$run/score.json"
+	  $(PYTHON) -B tests/benchmark_cases.py score "$(BENCHMARK_CASES)" "$$run/responses.jsonl" --failures "$$run/failures.jsonl" \
+	    --judge "$(ENDPOINT)" $(if $(wildcard $(LEXICON)),--lexicon "$(LEXICON)") | tee "$$run/score.json"
 
 eval eval-strict:
 	@mkdir -p "$(RUNS_DIR)"; run=$$(mktemp -d "$(RUNS_DIR)/$$(date +%Y%m%d-%H%M%S)-XXXXXX"); \

@@ -16,7 +16,7 @@
 
 ## 本地推理
 
-本次 Qwen 2B / 27B 选型实验的命令、用例和评分器都在本仓库。在本仓库根目录运行 `make help` 查看入口。完整流程需要 Linux、GNU Make、Bash、Python 3.8+、[uv](https://docs.astral.sh/uv/)、Docker（已配置 NVIDIA 容器运行时）、`curl`、`jq`、`flock` 和 `sha256sum`。唯一的 Python 依赖是 `pypinyin`（用来把回复反译成拼音做输出校验），由 `uv.lock` 锁定；所有 Python 命令通过 `uv run python` 运行，第一次会自动创建 `.venv`。`prepare` 下载的是推理镜像和模型，不安装 Docker 或显卡驱动。
+本次 Qwen 2B / 27B 选型实验的命令、用例和评分器都在本仓库。在本仓库根目录运行 `make help` 查看入口。完整流程需要 Linux、GNU Make、Bash、Python 3.8+、[uv](https://docs.astral.sh/uv/)、Docker（已配置 NVIDIA 容器运行时）、`curl`、`jq`、`flock` 和 `sha256sum`。唯一的 Python 依赖是 `pypinyin`（用来把回复反译成拼音，做输出校验和容忍层评分），由 `uv.lock` 锁定；所有 Python 命令通过 `uv run python` 运行，第一次会自动创建 `.venv`。`prepare` 下载的是推理镜像和模型，不安装 Docker 或显卡驱动。
 
 ```sh
 make prepare MODEL=2b
@@ -26,7 +26,7 @@ make eval
 make stop
 ```
 
-`WORKERS`（默认 4）是同时在途的请求数：`serve` 按它开服务端槽位，每个槽位 4096 上下文；`infer`、`eval`、`benchmark` 按它开线程。两边要一致。`WORKERS=1` 是逐条串行的参照配置；批处理会让 temperature 0 的结果和串行有微小差异。27B 开 4 个槽位在 24 GB 显卡上占约 17.8 GB。
+`WORKERS`（默认 4）是同时在途的请求数：`serve` 按它开服务端槽位，每个槽位 4096 上下文；`infer`、`eval`、`benchmark` 按它开线程。两边要一致。27B 开 4 个槽位在 24 GB 显卡上占约 17.8 GB。**对比两个版本时用 `WORKERS=1`**：串行时同一批请求的结果逐次相同；4 并发下批处理会改变浮点结果，两次运行之间约有 3%–10% 的回复不同（40 条里 1–2 条，另一次 180 条里有 18 条），几个百分点的差异分不清是改进还是噪声。
 
 `prepare` 不启动容器，可在能联网时单独运行。它复用已有镜像，把所选 GGUF 下载到 `~/.cache/52hz/models`（可用 `MODEL_DIR` 覆盖）；2B 权重约 1.2 GiB，27B 约 15.4 GiB，镜像另计。未完成的下载保留为 `.part`，重跑时续传；下载完成并校验 SHA-256 后才更名。`serve` 会先执行 `prepare`，无需手动重复准备，再从本地文件后台启动模型。`stop` 保留镜像和权重。
 
@@ -50,13 +50,14 @@ make stop
 
 裁决器读完整候选、原始按键、上下文、记忆和已选译文，返回候选编号而非另写文本。候选池默认不弹给用户；`type` 只能预览，空格后有实质歧义才询问，`More` 必须查看指定片段。无合法候选或缺少有效局部选项时保留输入，不强行提交。`responses.jsonl` 和 Web 调用记录的 `search` 字段可检查生成顺序、最终选择和两个阶段的毫秒耗时。排在首选后的候选仅为备选，不代表概率排序。
 
-`DECODER=hint` 是第三种解码器：一次普通对话调用，带示例和一行机械切分的音节提示（`切分：jin tian wan shang chi fan?`，`?` 标出可能按错的位置），直接把回复作为唯一候选。它按顺序做三件事：
+`DECODER=hint` 是第三种解码器：模型提出一句文字，规则检查它，对不上再做有限的修复。算法见 52hz-docs 的[解码算法](../52hz-docs/docs/decoding-algorithm.md)。
 
-1. 回复里必须保留 `selected` 中用户选定的文字，否则退回 JSON 契约。
-2. 把回复反译成拼音和按键比较，相差超过 5 个字符或按键长度的 30% 就不上屏，返回 error 保留原始输入。试跑里正确的句子从未超过 2，读得通但选词不同的近错都在四分之一以内，只有和按键无关的输出才超过三分之一，所以这道校验只拦离谱结果。
-3. `type` 返回 preview，`space` 返回 commit。
+1. **提议**：一次普通对话调用，带示例、上文、记忆和一行机械切分的音节提示（`切分：jin tian wan shang chi fan?`，`?` 标出可能按错的位置），回复就是唯一的候选。回复必须保留 `selected` 中用户选定的文字，否则退回 JSON 契约。
+2. **校验**：把回复的每个字和它该敲出的按键逐一对齐。一步按键错误记 1，跨音节边界的字母颠倒也只记 1，口音合并（en/eng、平翘舌等）记 1，和按键无关的字按实际距离记。额度是 `max(2, round(0.3 × 音节数))`。
+3. **修复回路**：总分超出额度才进入，最多两轮。每轮只告诉模型它自己写的那句话里哪几个字对不上、按键在那里还能读成哪些音节，让它只改这几处。改写后的句子重新校验，分数更低才接受；有词表时（`LEXICON`）还要求没有引入语料里没见过的字组。
+4. **仍然超出额度**的回复不上屏，返回 error，原文在 `rejected` 里。
 
-它不追问，也不搜索候选，速度快一个量级，用来测“一次成功率”。追问是单独的课题，目前只有 `ranked` 有追问路径。音节切分只依赖内置的 424 个音节和音节频率表，`keys` 仍原样发送。
+`type` 返回 preview，`space` 返回 commit，不追问。每条回复带 `verify`（分数和额度）和 `repair`（进了几轮回路、修复前的原句）。音节切分只依赖内置的 424 个音节和音节频率表，`keys` 仍原样发送。
 
 同一台模型服务上执行 `make eval DECODER=direct` 可复测原先的一次生成；`make eval DECODER=ranked` 使用新算法。Web 也使用同一配置，切换时只需重启 `make web DECODER=...`，不需要重新下载模型。`make smoke` 仍是单请求连接检查。
 
@@ -96,16 +97,18 @@ make score RESPONSES=/tmp/52hz-responses.jsonl
 `make benchmark` 对 `BENCHMARK_CASES`（默认 52hz-eval 生成的 `benchmark/iteration-003/cases.jsonl`）导出盲测请求、逐条推理并评分，产物在 `runs/benchmark-<模型>-<时间>-<随机后缀>/`。试跑可以用分层小集：
 
 ```sh
-make benchmark MODEL=27b DECODER=hint \
-  BENCHMARK_CASES=/data/52hz-eval/build/benchmark/iteration-003/trial-100.jsonl
+make benchmark MODEL=27b DECODER=hint WORKERS=1 \
+  BENCHMARK_CASES=/data/52hz-eval/build/benchmark/iteration-003/trial-300.jsonl
 ```
 
 `score.json` 按产品定义分开统计，分母是全部用例：
 
 - `passed`：一次成功率，只有 `commit` 且首选全文正确才计入。
-- `wrong_commits`、`asks`、`errors`：错误上屏、主动询问、没有合法输出（`hint` 下包括因读音相差太远被拦下、没有上屏的）。
+- `wrong_commits`、`asks`、`errors`：错误上屏、主动询问、没有合法输出（`hint` 下包括校验后仍然解释不了按键、没有上屏的）。
+- `homophone_passing`：错误上屏里，读音和标准答案完全一样且成词的。给出词表（`LEXICON`）时才计算。
+- `tolerated`：其中模型结合上文也分不出高低的，交给追问阶段解决，不计入一次成功。判断方法是把两个写法放进句子里让模型二选一（两种顺序各问一次取平均），所以评分时要用 `--judge` 指定模型服务才计算；`make benchmark` 自动带上。
 - `in_pool`：正确全文是否出现在 `search.pool` 里（只有 `ranked` 有候选池），是裁判选择的上限。
 - `char_error_rate`：上屏结果相对标准答案的字错率。
-- `by_operation`、`by_source`、`by_length`：按噪声操作、来源和长度分组，每组都带上面各项。
+- `by_operation`、`by_errors`、`by_source`、`by_length`：按噪声操作、输入里的错误个数、来源和长度分组，每组都带上面各项。
 
-`failures.jsonl` 每行是一条失败用例的 `expected` 和 `actual`。在 27B、4 并发下，`ranked` 每条约 2 秒，`hint` 每条约 0.3 秒。
+`failures.jsonl` 每行是一条失败用例的 `expected` 和 `actual`。在 27B、4 并发下，`ranked` 每条约 2 秒，`hint` 每条约 0.3 秒。串行时 300 条 `hint` 用 120 秒，带校验和修复回路的用 226 秒：约四成的输入会多一到两次调用。

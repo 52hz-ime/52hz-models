@@ -66,14 +66,26 @@ for syllable in SYLLABLES:
         shortened = syllable[:index] + syllable[index + 1:]
         if shortened not in SYLLABLES:
             SHORTENED.setdefault(shortened, []).append(syllable)
+# The same index without that exception: a valid syllable may still be a longer one with a letter dropped.
+DROPPED = {}
+for syllable in SYLLABLES:
+    for index in range(len(syllable)):
+        shortened = syllable[:index] + syllable[index + 1:]
+        if len(shortened) > 1:
+            DROPPED.setdefault(shortened, []).append(syllable)
 LONGEST = max(map(len, SYLLABLES))
 VOWELS = frozenset("aeiouv")
 INITIALS = frozenset("b p m f d t n l g k h j q x r z c s y w zh ch sh".split())
 # Each tolerated error has a prior cost; a syllable that lost its vowel is less likely than one that lost another letter.
 EXACT, SWAPPED, DUPLICATE, MISSING, EXTRA, NEIGHBOR, SWAPPED_PAIR, MISSING_VOWEL, STRAY_VOWEL, STRAY_CONSONANT = (
     0.0, 0.8, 1.0, 1.0, 1.1, 1.2, 1.3, 1.4, 1.6, 2.6)
+# A valid syllable may still stand for a neighbouring one when the typist merges two sounds.
+ACCENT = 0.6
 RARE = 1.5
 UNRELIABLE = 0.4
+# For alternatives at one spot: readings within this of the cheapest one are kept.
+MARGIN = 1.2
+RARE_SYLLABLES = frozenset(("m", "n", "ng", "hm", "hng"))
 RUNS = re.compile(r"[A-Z]+[a-z]*|[a-z]+|[0-9]+|[^A-Za-z0-9]")
 
 
@@ -108,6 +120,94 @@ def edits(run, start, size):
     return None
 
 
+def accent_partners(syllable):
+    """What a valid syllable may stand for when the typist does not separate two sounds."""
+    if len(syllable) < 2:
+        return []
+    partners = []
+    if syllable.endswith("ng"):
+        partners.append(syllable[:-1])
+    elif syllable + "g" in SYLLABLES:
+        partners.append(syllable + "g")
+    if syllable[0] in "nl" and syllable != "ng":
+        partners.append(("l" if syllable[0] == "n" else "n") + syllable[1:])
+    plain = {"z": "zh", "c": "ch", "s": "sh"}.get(syllable[0], "")
+    if plain:
+        partners.append(plain + syllable[1:])
+    if syllable[0] in "fh":
+        partners.append(("h" if syllable[0] == "f" else "f") + syllable[1:])
+    return [partner for partner in partners if partner in SYLLABLES and partner != syllable]
+
+
+def readings(run, start, size, accent=True):
+    """Every syllable the keys at one span can stand for, cheapest first, within the margin of the cheapest."""
+    span = run[start:start + size]
+    found = {}
+
+    def add(cost, syllable):
+        if syllable not in found or cost < found[syllable]:
+            found[syllable] = cost
+
+    if span in SYLLABLES:
+        add(RARE if span in RARE_SYLLABLES else EXACT, span)
+        if accent:
+            for partner in accent_partners(span):
+                add(ACCENT, partner)
+    if size == 1:
+        if (start > 0 and run[start - 1] == span) or (start + 1 < len(run) and run[start + 1] == span):
+            add(DUPLICATE, span)
+        else:
+            add(STRAY_VOWEL if span in VOWELS else STRAY_CONSONANT, span)
+        return sorted((cost, syllable) for syllable, cost in found.items())
+    for index in range(size - 1):
+        swapped = span[:index] + span[index + 1] + span[index] + span[index + 2:]
+        if swapped in SYLLABLES:
+            add(SWAPPED if size > 2 else SWAPPED_PAIR, swapped)
+    if span in DROPPED and VOWELS.intersection(span):
+        for full in DROPPED[span]:
+            add(MISSING, full)
+    if span in INITIALS:
+        add(MISSING_VOWEL, span)
+    for index in range(size):
+        shortened = span[:index] + span[index + 1:]
+        if shortened in SYLLABLES:
+            add(EXTRA, shortened)
+    for index, char in enumerate(span):
+        for other in NEIGHBORS.get(char, ()):
+            replaced = span[:index] + other + span[index + 1:]
+            if replaced in SYLLABLES:
+                add(NEIGHBOR, replaced)
+    if not found:
+        return []
+    cheapest = min(found.values())
+    return sorted((cost, syllable) for syllable, cost in found.items() if cost <= cheapest + MARGIN)[:8]
+
+
+def alternatives(typed, exclude):
+    """Other syllables the typed letters can stand for, most plausible first."""
+    if not typed.isalpha() or not 1 <= len(typed) <= LONGEST:
+        return []
+    found = readings(typed, 0, len(typed))
+    found.sort(key=lambda item: item[0] + PRIOR * SURPRISE.get(item[1], 1500) / 100)
+    return [syllable for _, syllable in found if syllable not in exclude][:4]
+
+
+def segment(keys):
+    """Split keys into hint tokens: syllables with a '?' where a keystroke error was tolerated."""
+    tokens = []
+    for match in RUNS.finditer(keys):
+        token = match.group()
+        if token.islower():
+            tokens.extend(segment_run(token))
+        elif token.isalpha() and not token.isupper():
+            # A capitalised run is pinyin when it reads cleanly, otherwise it is a word such as iPhone or Atlas.
+            pieces = segment_run(token.lower())
+            tokens.extend(pieces if len(pieces) > 1 and all(not piece.endswith("?") for piece in pieces) else [token])
+        else:
+            tokens.append(token)
+    return " ".join(tokens)
+
+
 def segment_run(run):
     """Cut one lowercase run into syllables with the fewest and cheapest tolerated errors."""
     count = len(run)
@@ -134,19 +234,3 @@ def segment_run(run):
         tokens.append((syllable or run[start:end]) + ("?" if cost else ""))
         end = start
     return tokens[::-1]
-
-
-def segment(keys):
-    """Split keys into hint tokens: syllables with a '?' where a keystroke error was tolerated."""
-    tokens = []
-    for match in RUNS.finditer(keys):
-        token = match.group()
-        if token.islower():
-            tokens.extend(segment_run(token))
-        elif token.isalpha() and not token.isupper():
-            # A capitalised run is pinyin when it reads cleanly, otherwise it is a word such as iPhone or Atlas.
-            pieces = segment_run(token.lower())
-            tokens.extend(pieces if len(pieces) > 1 and all(not piece.endswith("?") for piece in pieces) else [token])
-        else:
-            tokens.append(token)
-    return " ".join(tokens)
