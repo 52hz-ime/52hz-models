@@ -78,6 +78,8 @@ make infer REQUESTS=/tmp/52hz-requests.jsonl RESPONSES=/tmp/52hz-responses.jsonl
 make score RESPONSES=/tmp/52hz-responses.jsonl
 ```
 
+实验结果按工作迭代分目录存放（`runs/iter-NN/`），迭代编号和记录见 52hz-docs 的[迭代记录](../52hz-docs/docs/iterations.md)；`experiments/` 里是各次对照实验的脚本。
+
 `make test` 不下载资源，不运行真实模型。`make smoke` 可向正在运行的模型发一条测试请求，使用 `KEYS=...` 和 `CONTEXT=...` 改变输入。批量评分要求每条请求对应一条相同 `id` 的 JSONL 响应，例如：
 
 ```jsonl
